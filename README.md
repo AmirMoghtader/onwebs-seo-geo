@@ -65,7 +65,7 @@ Grab the installer for your OS from **[Releases](../../releases)**:
 |---|---|
 | macOS (Apple Silicon) | `*_aarch64.dmg` |
 | macOS (Intel) | `*_x64.dmg` |
-| Windows 10/11 | `*_x64-setup.exe` / `*.msi` |
+| Windows 10/11 | `*_x64-setup.exe` |
 | Linux (Debian/Ubuntu) | `*.deb` |
 | Linux (Fedora/RHEL) | `*.rpm` |
 | Linux (portable) | `*.AppImage` |
