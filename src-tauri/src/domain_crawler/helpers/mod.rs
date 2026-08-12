@@ -13,6 +13,7 @@ pub mod favicon;
 pub mod fetch_with_exponential;
 pub mod flesch_reader;
 pub mod headings_selector;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod headless_fetch;
 pub mod hreflang_selector;
 pub mod html_size_calculator;
@@ -35,6 +36,7 @@ pub mod pdf_checker;
 pub mod pdf_selector;
 pub mod robots;
 pub mod schema_selector;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod screenshot;
 pub mod sitemap;
 pub mod skip_url;

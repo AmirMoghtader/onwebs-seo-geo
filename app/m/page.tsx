@@ -125,6 +125,34 @@ const SEV = {
   notice: { label: "نکته", bg: "#E0EAFB", fg: ACCENT },
 };
 
+// The six audit areas shown as an IMDb-style card grid under the search bar.
+const CATEGORIES = [
+  { key: "technical", title: "سئو تکنیکال", tint: "#2B6CC4",
+    desc: "استتوس‌کدها و ساختار فنی",
+    more: "صفحات خراب 4xx/5xx، زنجیره‌ی ریدایرکت‌ها، robots.txt و خطاهای سروری — پایه‌ای که بقیه‌ی سئو روی آن می‌ایستد.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M10.3 4.3a2 2 0 013.4 0l.6 1a2 2 0 002.2.9l1.1-.3a2 2 0 012.4 2.4l-.3 1.1a2 2 0 00.9 2.2l1 .6a2 2 0 010 3.4l-1 .6a2 2 0 00-.9 2.2l.3 1.1a2 2 0 01-2.4 2.4l-1.1-.3a2 2 0 00-2.2.9l-.6 1a2 2 0 01-3.4 0l-.6-1a2 2 0 00-2.2-.9l-1.1.3a2 2 0 01-2.4-2.4l.3-1.1a2 2 0 00-.9-2.2l-1-.6a2 2 0 010-3.4l1-.6a2 2 0 00.9-2.2l-.3-1.1a2 2 0 012.4-2.4l1.1.3a2 2 0 002.2-.9l.6-1z" stroke="currentColor" strokeWidth="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5"/></svg>) },
+  { key: "content", title: "محتوا", tint: "#7C3AED",
+    desc: "تایتل، متا و کیفیت متن",
+    more: "تایتل‌های تکراری یا بلند، توضیحات متای خالی، H1 و صفحات کم‌محتوا — چیزهایی که مستقیم روی کلیک و رتبه اثر می‌گذارند.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" stroke="currentColor" strokeWidth="1.5"/><path d="M14 3v5h5M9 13h6M9 17h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>) },
+  { key: "links", title: "لینک‌ها", tint: "#0891B2",
+    desc: "لینک شکسته و ریدایرکت",
+    more: "لینک‌های داخلی که به صفحه‌ی مرده می‌روند یا از چند ریدایرکت رد می‌شوند، اعتبار و بودجه‌ی کراول را هدر می‌دهند.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.6-5.6l-1.2 1.2M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.6 5.6l1.2-1.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>) },
+  { key: "index", title: "ایندکس", tint: "#16A34A",
+    desc: "دیده‌شدن در گوگل",
+    more: "کدام صفحه‌ها ایندکس می‌شوند و کدام‌ها با noindex یا robots بیرون مانده‌اند — تا محتوایی که برایش زحمت کشیدی گم نشود.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M16 16l4.3 4.3M8.5 11l1.8 1.8 3.2-3.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>) },
+  { key: "speed", title: "سرعت", tint: "#D97706",
+    desc: "زمان پاسخ و حجم صفحه",
+    more: "پاسخ کند سرور و صفحات سنگین هم کاربر را می‌پراند هم خزنده‌ی گوگل را — سرعت جزو فاکتورهای رتبه است.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M13 2L4.5 13.5H11L9.5 22 19 10h-6.5L13 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/></svg>) },
+  { key: "geo", title: "GEO و هوش مصنوعی", tint: "#DB2777",
+    desc: "آمادگی برای جستجوی AI",
+    more: "ChatGPT و Perplexity هم سایتت را می‌خوانند؛ ساختار تمیز و محتوای قابل استناد یعنی در جواب‌های AI هم دیده شوی.",
+    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/><path d="M18.5 15l.9 2.3 2.1.7-2.1.7-.9 2.3-.9-2.3-2.1-.7 2.1-.7.9-2.3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>) },
+];
+
 export default function MobilePage() {
   const [url, setUrl] = useState("");
   const [phase, setPhase] = useState<"idle" | "crawling" | "done">("idle");
@@ -132,6 +160,7 @@ export default function MobilePage() {
   const pagesRef = useRef<any[]>([]);
   const [result, setResult] = useState<{ score: number; issues: Issue[] } | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const [openCat, setOpenCat] = useState<string | null>(null);
 
   // IMDb-style bottom bar: history / search (center, default) / profile.
   const [tab, setTab] = useState<"history" | "search" | "profile">("search");
@@ -276,20 +305,24 @@ export default function MobilePage() {
       style={{ background: `radial-gradient(80% 50% at 50% 0%, ${ACCENT}18 0%, transparent 60%), ${CANVAS}` }}>
 
       {tab === "search" && (<>
-      {/* Brand */}
-      <div className="flex flex-col items-center mt-14 mb-8">
-        <img src="/icon.png" alt="" className="w-16 h-16 mb-3"
-          style={{ filter: "drop-shadow(0 6px 14px rgba(30,58,111,0.2))" }} />
-        <div className="flex items-baseline gap-2" dir="ltr">
-          <span className="text-2xl font-bold" style={{ color: NAVY_DEEP }}>onwebs</span>
-          <span className="text-xs font-semibold" style={{ color: ACCENT }}>SEO & GEO</span>
+      {/* Brand: the site's 3D mark, search right under it */}
+      <div className="flex flex-col items-center mt-8 mb-5">
+        <img src="/logo-3d.png" alt="" className="w-24 h-24"
+          style={{ filter: "drop-shadow(0 10px 22px rgba(30,58,111,0.18))" }} />
+        <div className="flex items-baseline gap-1.5 -mt-1" dir="ltr">
+          <span className="text-xl font-bold" style={{ color: NAVY_DEEP }}>onwebs</span>
+          <span className="text-[10px] font-semibold" style={{ color: ACCENT }}>SEO & GEO</span>
         </div>
       </div>
 
-      {/* Search */}
+      {/* Search: compact capsule, same radius language as the nav pill */}
       <div className="w-full max-w-md">
-        <div className="flex items-stretch rounded-2xl bg-white overflow-hidden"
-          style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.10)" }}>
+        <div className="flex items-center rounded-full bg-white pl-1.5 pr-4 py-1.5"
+          style={{ boxShadow: "0 10px 30px rgba(30,58,111,0.12)" }} dir="ltr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="shrink-0 ml-1" style={{ color: "#94A3B8" }}>
+            <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.8" />
+            <path d="M16 16l4.2 4.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
           <input
             dir="ltr"
             type="url"
@@ -299,21 +332,58 @@ export default function MobilePage() {
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && phase !== "crawling" && start()}
             placeholder="example.com"
-            className="flex-1 min-w-0 px-4 py-4 text-[15px] outline-none bg-transparent text-left"
+            className="flex-1 min-w-0 px-2.5 py-2 text-[13.5px] outline-none bg-transparent text-left"
             style={{ color: NAVY_DEEP }}
           />
           <button
             onClick={start}
             disabled={phase === "crawling" || !url.trim()}
-            className="px-6 shrink-0 font-bold text-white text-sm disabled:opacity-50"
+            className="shrink-0 rounded-full px-4 py-2 font-bold text-white text-xs disabled:opacity-50"
             style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-            {phase === "crawling" ? "..." : "تحلیل"}
+            {phase === "crawling" ? "…" : "تحلیل"}
           </button>
         </div>
-        <p className="text-center text-[11px] mt-3 leading-5" style={{ color: "#64748B" }}>
-          آدرس سایتت را بزن تا کامل کراول و نمره‌گذاری شود — رایگان و روی خود گوشی
-        </p>
       </div>
+
+      {/* Six audit areas, IMDb interests-style grid */}
+      {phase === "idle" && (
+        <div className="w-full max-w-md mt-7">
+          <h2 className="text-[13px] font-extrabold mb-3" style={{ color: NAVY_DEEP }}>
+            چی بررسی می‌شود؟
+          </h2>
+          <div className="grid grid-cols-2 gap-3">
+            {CATEGORIES.map((cat) => {
+              const open = openCat === cat.key;
+              return (
+                <button key={cat.key}
+                  onClick={() => setOpenCat(open ? null : cat.key)}
+                  className={`text-right rounded-3xl bg-white p-4 transition-all active:scale-[0.98] ${open ? "col-span-2" : ""}`}
+                  style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}>
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+                      style={{ background: `${cat.tint}14` }}>
+                      {cat.icon(cat.tint)}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[12.5px] font-bold truncate" style={{ color: NAVY_DEEP }}>
+                        {cat.title}
+                      </span>
+                      <span className="block text-[10.5px] mt-0.5 truncate" style={{ color: "#64748B" }}>
+                        {cat.desc}
+                      </span>
+                    </span>
+                  </div>
+                  {open && (
+                    <p className="text-[11.5px] leading-5 mt-3 pt-3 border-t border-slate-50" style={{ color: "#475569" }}>
+                      {cat.more}
+                    </p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Crawling state */}
       <AnimatePresence>
@@ -460,7 +530,7 @@ export default function MobilePage() {
             </div>
 
             <button onClick={() => { setPhase("idle"); setResult(null); setUrl(""); setOpenKey(null); }}
-              className="w-full mt-6 py-3.5 rounded-2xl text-sm font-bold text-white"
+              className="w-full mt-6 py-3.5 rounded-full text-sm font-bold text-white"
               style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
               تحلیل سایت دیگر
             </button>
@@ -489,7 +559,7 @@ export default function MobilePage() {
                 از تب جستجو اولین سایتت را تحلیل کن
               </p>
               <button onClick={() => setTab("search")}
-                className="mt-5 px-6 py-2.5 rounded-xl text-xs font-bold text-white"
+                className="mt-5 px-6 py-2.5 rounded-full text-xs font-bold text-white"
                 style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
                 برو به جستجو
               </button>
@@ -552,11 +622,11 @@ export default function MobilePage() {
               <div className="space-y-3">
                 <input value={formName} onChange={(e) => setFormName(e.target.value)}
                   placeholder="نام"
-                  className="w-full px-4 py-3.5 rounded-xl text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white"
+                  className="w-full px-5 py-3.5 rounded-full text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white"
                   style={{ color: NAVY_DEEP }} />
                 <input value={formEmail} onChange={(e) => setFormEmail(e.target.value)}
                   placeholder="ایمیل" dir="ltr" inputMode="email" autoCapitalize="none"
-                  className="w-full px-4 py-3.5 rounded-xl text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white text-left"
+                  className="w-full px-5 py-3.5 rounded-full text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white text-left"
                   style={{ color: NAVY_DEEP }} />
                 <button
                   disabled={!formName.trim()}
@@ -565,7 +635,7 @@ export default function MobilePage() {
                     setProfile(p);
                     try { localStorage.setItem("onwebs.m.profile", JSON.stringify(p)); } catch {}
                   }}
-                  className="w-full py-3.5 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+                  className="w-full py-3.5 rounded-full text-sm font-bold text-white disabled:opacity-50"
                   style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
                   ورود
                 </button>
@@ -605,7 +675,7 @@ export default function MobilePage() {
 
               <button
                 onClick={() => { setProfile(null); setFormName(""); setFormEmail(""); try { localStorage.removeItem("onwebs.m.profile"); } catch {} }}
-                className="w-full py-3.5 rounded-2xl text-sm font-bold border"
+                className="w-full py-3.5 rounded-full text-sm font-bold border"
                 style={{ color: "#DC2626", borderColor: "#FECACA", background: "white" }}>
                 خروج از حساب
               </button>
@@ -617,31 +687,31 @@ export default function MobilePage() {
       {/* IMDb-style floating pill tab bar: detached capsule, icons only,
           the active tab gets a soft grey highlight behind it. */}
       <nav dir="ltr"
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full px-2.5 py-1.5"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full px-3 py-2"
         style={{
           background: "rgba(255,255,255,0.96)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          boxShadow: "0 10px 34px rgba(16,24,40,0.18), 0 2px 8px rgba(16,24,40,0.07)",
+          boxShadow: "0 12px 38px rgba(22,41,79,0.20), 0 2px 8px rgba(22,41,79,0.08)",
           marginBottom: "env(safe-area-inset-bottom)",
         }}>
         {[
           { key: "profile", label: "ورود", icon: (c, w) => (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
               <circle cx="12" cy="12" r="9.2" stroke="currentColor" strokeWidth={w} />
               <circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth={w} />
               <path d="M6.8 18.6c1.2-2.3 3-3.4 5.2-3.4s4 1.1 5.2 3.4" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
             </svg>
           )},
           { key: "search", label: "جستجو", icon: (c, w) => (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
               <circle cx="11" cy="11" r="6.8" stroke="currentColor" strokeWidth={w} />
               <circle cx="11" cy="11" r="2" fill="currentColor" />
               <path d="M16.2 16.2l4.3 4.3" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
             </svg>
           )},
           { key: "history", label: "تاریخچه", icon: (c, w) => (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
               <circle cx="12" cy="12" r="8.6" stroke="currentColor" strokeWidth={w} />
               <path d="M12 7.4V12l3.4 2.1" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
             </svg>
@@ -650,12 +720,15 @@ export default function MobilePage() {
           const active = tab === t.key;
           return (
             <button key={t.key} onClick={() => setTab(t.key)} aria-label={t.label}
-              className="flex items-center justify-center rounded-full active:opacity-70 transition-colors"
+              className="flex items-center justify-center rounded-full active:opacity-70 transition-all"
               style={{
-                width: 62, height: 44,
-                background: active ? "#ECEDEF" : "transparent",
+                width: 78, height: 52,
+                background: active
+                  ? `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)`
+                  : "transparent",
+                boxShadow: active ? "0 6px 16px rgba(43,108,196,0.35)" : "none",
               }}>
-              {t.icon("#141A24", active ? 2 : 1.8)}
+              {t.icon(active ? "#FFFFFF" : "#5A6B85", active ? 2 : 1.8)}
             </button>
           );
         })}

@@ -285,7 +285,7 @@ const SEOImprovements = ({
   if (!pageSpeed) {
     return (
       <section className="h-[calc(100vh-10rem)] flex flex-col space-y-2 items-center justify-center">
-        <img src="loadingDog.png" alt="dog" />
+        <img src="/icon.png" alt="" className="w-16 h-16 object-contain opacity-80" />
         <span className="block text-brand-dark/40 dark:text-white/20">
           هیچ صفحه‌ای کراول نشده
         </span>

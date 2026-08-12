@@ -347,12 +347,23 @@ pub async fn process_url(
 
             // Run blocking Chrome operation
             // Run blocking Chrome operation with a timeout
-            tokio::time::timeout(
-                Duration::from_secs(45), // 45s timeout for JS rendering
-                task::spawn_blocking(move || headless_fetch::fetch_js_body(&js_url))
-            ).await
-                .map_err(|e| e.to_string())? // Outer timeout error
-                .map_err(|e| e.to_string())? // Inner spawn_blocking error
+            {
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    tokio::time::timeout(
+                        Duration::from_secs(45), // 45s timeout for JS rendering
+                        task::spawn_blocking(move || headless_fetch::fetch_js_body(&js_url))
+                    ).await
+                        .map_err(|e| e.to_string())? // Outer timeout error
+                        .map_err(|e| e.to_string())? // Inner spawn_blocking error
+                }
+                // No Chrome on phones: skip JS rendering and keep the raw HTML.
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                {
+                    let _ = js_url;
+                    Err("JS rendering is not available on mobile".to_string())
+                }
+            }
         };
 
         match js_fetch_future.await {

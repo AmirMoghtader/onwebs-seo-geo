@@ -177,6 +177,12 @@ pub async fn get_url_data_command(url: String) -> Result<Value, String> {
 // crawling setting; launches its own short-lived headless Chrome tab.
 #[tauri::command]
 pub async fn capture_page_screenshot_command(url: String) -> Result<String, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = url;
+        return Err("Screenshots are not available on mobile".to_string());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     tokio::task::spawn_blocking(move || super::helpers::screenshot::capture_page_screenshot(&url))
         .await
         .map_err(|e| format!("Screenshot task panicked: {}", e))?
