@@ -15,7 +15,6 @@ import { FileTypeTimelineChart } from "./_components/charts/FileTypeTimelineChar
 import { BandwidthTimelineChart } from "./_components/charts/BandwidthTimelineChart";
 import InputZone from "./_components/InputZone";
 import { LogAnalyzer } from "./_components/table/log-analyzer";
-import UploadButton from "./_components/UploadButton";
 import WidgetLogs from "./_components/WidgetLogs";
 import { toast, Toaster } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -373,9 +372,7 @@ export default function Page() {
   const resetAll = useLogAnalysisStore((state) => state.resetAll);
 
   return (
-    <section className="flex flex-col dark:bg-brand-darker  w-[100%] pt-[4rem] h-[calc(100vh - 20-rem)] overflow-hidden  ">
-      <UploadButton />
-
+    <section className="flex flex-col dark:bg-brand-darker w-[100%] pt-2 h-full overflow-hidden">
       <InputZone handleDomainCrawl={""} />
       <main className="pb-[6.2rem] overflow-hidden h-[100%] relative">
         <div className="flex flex-1 h-full w-full ">

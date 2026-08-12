@@ -9,7 +9,11 @@ import { ThemeProvider } from "./components/theme-provider";
 
 export default function ImagesLayout({ children }: any) {
   return (
-    <main className={`-mt-20 h-screen flex flex-col font-sans`}>
+    <main
+      // 46px top spacer + 36px fixed footer — this page has no inner scroll
+      // region of its own, so its bottom toolbar must end above the footer.
+      className={`h-[calc(100vh-82px)] flex flex-col font-sans`}
+    >
       <div className=" w-full bg-white border-b dark:border-b-brand-dark h-11 flex-none dark:bg-brand-darker">
         <div className="pt-2">
           <MenuDrawer />

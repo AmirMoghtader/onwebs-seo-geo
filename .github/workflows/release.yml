@@ -28,7 +28,9 @@ jobs:
           - platform: ubuntu-22.04
             args: ""
           - platform: windows-latest
-            args: ""
+            # WiX rejects the "&" in the product name, so Windows ships the
+            # NSIS setup.exe instead of an .msi.
+            args: "--bundles nsis"
 
     runs-on: ${{ matrix.platform }}
     steps:
