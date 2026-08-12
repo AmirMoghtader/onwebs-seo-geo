@@ -2,7 +2,9 @@
   "identifier": "migrated",
   "description": "permissions that were migrated from v1",
   "local": true,
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "fs:allow-read-file",
@@ -67,10 +69,11 @@
     "fs:allow-video-write-recursive",
     "fs:write-all",
     "fs:write-files",
-
     {
       "identifier": "fs:scope",
-      "allow": ["**"]
+      "allow": [
+        "**"
+      ]
     },
     "core:window:allow-create",
     "core:window:allow-center",
@@ -141,6 +144,10 @@
     "dialog:default",
     "http:default",
     "dialog:default"
+  ],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
   ]
 }
-

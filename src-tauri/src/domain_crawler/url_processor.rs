@@ -18,7 +18,9 @@ use crate::domain_crawler::helpers::fetch_with_exponential::fetch_with_exponenti
 use crate::domain_crawler::helpers::https_checker::valid_https;
 use crate::domain_crawler::helpers::normalize_url::normalize_url;
 use crate::domain_crawler::helpers::skip_url::should_skip_url;
-use crate::domain_crawler::helpers::{headless_fetch, opengraph, url_depth};
+use crate::domain_crawler::helpers::{opengraph, url_depth};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::domain_crawler::helpers::headless_fetch;
 use crate::settings::settings::Settings;
 
 use super::helpers::canonical_selector::get_canonical;
@@ -361,7 +363,9 @@ pub async fn process_url(
                 #[cfg(any(target_os = "android", target_os = "ios"))]
                 {
                     let _ = js_url;
-                    Err("JS rendering is not available on mobile".to_string())
+                    Err::<(String, Vec<String>), String>(
+                        "JS rendering is not available on mobile".to_string(),
+                    )
                 }
             }
         };
