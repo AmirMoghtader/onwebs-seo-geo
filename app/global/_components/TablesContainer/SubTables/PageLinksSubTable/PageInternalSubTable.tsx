@@ -1,0 +1,245 @@
+// @ts-nocheck
+import { message, save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
+
+const PageInternalSubTable = forwardRef<
+  { exportCSV: () => Promise<void> },
+  { data: any; height: number }
+>(({ data, height }, ref) => {
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    exportCSV: () => exportCSV(),
+  }));
+
+  const makeResizable = (tableRef: HTMLTableElement | null) => {
+    if (!tableRef) return;
+
+    const cols = tableRef.querySelectorAll("th");
+    cols.forEach((col) => {
+      const resizer = document.createElement("div");
+      resizer.style.width = "1px";
+      resizer.style.height = "100%";
+      resizer.style.background = "#39393a26";
+      resizer.style.position = "absolute";
+      resizer.style.right = "0";
+      resizer.style.top = "0";
+      resizer.style.cursor = "col-resize";
+      resizer.style.userSelect = "none";
+
+      resizer.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const startX = e.pageX;
+        const colWidth = col.offsetWidth;
+
+        const onMouseMove = (e: MouseEvent) => {
+          const newWidth = colWidth + (e.pageX - startX);
+          col.style.width = `${newWidth}px`;
+        };
+
+        const onMouseUp = () => {
+          document.removeEventListener("mousemove", onMouseMove);
+          document.removeEventListener("mouseup", onMouseUp);
+        };
+
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      });
+
+      col.appendChild(resizer);
+    });
+  };
+
+  const exportCSV = async () => {
+    const statusCodes = data?.[0]?.inoutlinks_status_codes?.internal || [];
+    const uniqueMap = new Map();
+    statusCodes.forEach((item: any) => {
+      const key =
+        (item.url || item.relative_path || "") + (item.anchor_text || "");
+      if (!key) return;
+      const existing = uniqueMap.get(key);
+      if (!existing || (item.status === 200 && existing.status !== 200)) {
+        uniqueMap.set(key, item);
+      }
+    });
+    const uniqueStatusCodes = Array.from(uniqueMap.values());
+
+    if (!uniqueStatusCodes.length) {
+      await message("No data to export", {
+        title: "Export Error",
+        type: "error",
+      });
+      return;
+    }
+
+    const headers = ["ID", "Anchor Text", "Link", "Status Code"];
+
+    const csvData = uniqueStatusCodes.map((item: any, index: number) => [
+      index + 1,
+      `"${(item.anchor_text || "").replace(/"/g, '""')}"`,
+      `"${(item.url || "").replace(/"/g, '""')}"`,
+      item.status !== null ? item.status : item.error || "N/A",
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...csvData.map((row: string[]) => row.join(",")),
+    ].join("\n");
+
+    try {
+      const filePath = await save({
+        defaultPath: `Onwebs SEO & GEO - Page Internal Links - ${new Date().toISOString().slice(0, 10)}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+
+      if (filePath) {
+        await writeTextFile(filePath, csvContent);
+        await message("CSV file saved successfully!", {
+          title: "Export Complete",
+          type: "info",
+        });
+      }
+    } catch (error) {
+      console.error("Export failed:", error);
+      await message(`Failed to export CSV: ${error}`, {
+        title: "Export Error",
+        type: "error",
+      });
+    }
+  };
+
+  useEffect(() => {
+    makeResizable(tableRef.current);
+  }, []);
+
+  const internalStatusCodes =
+    data?.[0]?.inoutlinks_status_codes?.internal || [];
+
+  if (!internalStatusCodes.length) {
+    return (
+      <div
+        style={{
+          height: `${height - 15}px`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "100%",
+        }}
+      >
+        <p className="dark:text-white/50 text-black/50 text-xs">
+          برای دیدن جزئیات، یک URL از جدول HTML انتخاب کنید
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <section
+      className="overflow-auto h-full w-full"
+      style={{ height: `${height}px`, minHeight: "100px" }}
+    >
+      <table
+        ref={tableRef}
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          marginBottom: "30px",
+        }}
+      >
+        <thead className="text-xs top-0 sticky">
+          <tr className="shadow">
+            <th
+              style={{ width: "50px", textAlign: "left", position: "relative" }}
+              className="bg-gray-100 dark:bg-brand-dark"
+            >
+              ID
+            </th>
+            <th
+              style={{
+                textAlign: "left",
+                position: "relative",
+                minWidth: "200px",
+              }}
+              className="bg-gray-100 dark:bg-brand-dark"
+            >
+              Anchor Text
+            </th>
+            <th
+              style={{
+                textAlign: "left",
+                position: "relative",
+                minWidth: "400px",
+              }}
+              className="bg-gray-100 dark:bg-brand-dark"
+            >
+              لینک
+            </th>
+            <th
+              style={{
+                textAlign: "center",
+                position: "relative",
+                width: "80px",
+              }}
+              className="bg-gray-100 dark:bg-brand-dark"
+            >
+              وضعیت
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {(() => {
+            const statusCodes =
+              data?.[0]?.inoutlinks_status_codes?.internal || [];
+            const uniqueMap = new Map();
+            statusCodes.forEach((item: any) => {
+              const key =
+                (item.url || item.relative_path || "") +
+                (item.anchor_text || "");
+              if (!key) return;
+              const existing = uniqueMap.get(key);
+              if (
+                !existing ||
+                (item.status === 200 && existing.status !== 200)
+              ) {
+                uniqueMap.set(key, item);
+              }
+            });
+            const uniqueStatusCodes = Array.from(uniqueMap.values());
+            return uniqueStatusCodes.map((item: any, index: number) => (
+              <tr key={index}>
+                <td style={{ textAlign: "left" }} className="pl-4 border">
+                  {index + 1}
+                </td>
+                <td style={{ textAlign: "left" }} className="pl-3 border">
+                  {item.anchor_text || ""}
+                </td>
+                <td style={{ textAlign: "left" }} className="pl-3 border">
+                  {item.url || ""}
+                </td>
+                <td
+                  style={{
+                    textAlign: "center",
+                    color:
+                      item?.status === 200
+                        ? "green"
+                        : item?.status === 400
+                          ? "red"
+                          : "orange",
+                  }}
+                  className="pl-3 border font-semibold"
+                >
+                  {item.status !== null ? item.status : item.error || "N/A"}
+                </td>
+              </tr>
+            ));
+          })()}
+        </tbody>
+      </table>
+    </section>
+  );
+});
+
+PageInternalSubTable.displayName = "PageInternalSubTable";
+
+export default PageInternalSubTable;

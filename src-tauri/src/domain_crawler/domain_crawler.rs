@@ -1,0 +1,858 @@
+//! Main domain crawler orchestration
+//! On expansion keep adding separate modules to slim down the codebase and improve maintainability.
+//! This module contains the main `crawl_domain` function that coordinates
+//! the entire crawling process. The actual URL processing is delegated to
+//! the `url_processor` module.
+
+use rand::seq::IndexedRandom;
+use reqwest::Client;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+use tauri::Emitter;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::time::{sleep, Duration};
+use url::Url;
+use dashmap::DashMap;
+
+use crate::domain_crawler::helpers::domain_checker::url_check;
+use crate::domain_crawler::helpers::favicon;
+use crate::domain_crawler::helpers::robots::{self};
+use crate::domain_crawler::helpers::sitemap;
+use crate::domain_crawler::helpers::url_filters::UrlFilters;
+use crate::domain_crawler::helpers::normalize_url::normalize_url;
+use crate::AppState;
+
+use super::database::{self, Database, DatabaseError};
+use super::helpers::links_status_code_checker::SharedLinkChecker;
+use super::state::{to_database_results, CrawlerState, FailedUrl, ProgressData};
+use super::url_processor::process_url;
+
+/// What the crawler is doing right now, emitted so the UI can show progress
+/// even when the count is not moving. A crawl sitting at 0% because a host is
+/// timing out looks identical to a crawl that is broken; this is the
+/// difference.
+#[derive(Clone, serde::Serialize)]
+struct CrawlActivity {
+    /// "fetching" | "error" | "queued" | "done"
+    kind: String,
+    url: String,
+    /// human-readable detail: an HTTP status, or why the fetch failed
+    detail: String,
+    queued: usize,
+    active: usize,
+    crawled: usize,
+}
+
+/// Payload for the `crawl_rate_limited` event so the frontend can surface
+/// server-driven backoff instead of the crawl silently appearing slow.
+#[derive(Clone, serde::Serialize)]
+struct RateLimitedData {
+    /// Adaptive delay now applied between requests, in milliseconds
+    delay_ms: u64,
+    /// How long new task spawning is paused, in milliseconds
+    cooldown_ms: u64,
+    /// HTTP status that triggered the backoff (0 when detected from body content)
+    status: u16,
+}
+
+/// Main entry point for domain crawling
+pub async fn crawl_domain(
+    domain: &str,
+    app_handle: tauri::AppHandle,
+    db: Result<Database, DatabaseError>,
+    settings_state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let settings = settings_state.settings.read().await.clone();
+    let crawl_control = settings_state.crawl_control.clone();
+    crawl_control.store(0, Ordering::Relaxed);
+
+    // Extract all settings values we need to avoid borrowing issues
+    let _user_agents = settings.user_agents.clone();
+    let client_timeout = settings.client_timeout;
+    let client_connect_timeout = settings.client_connect_timeout;
+    let concurrent_requests = settings.concurrent_requests;
+    let js_concurrency = settings.javascript_concurrency;
+    let stall_check_interval = settings.stall_check_interval;
+    let max_pending_time = settings.max_pending_time;
+    let batch_size = settings.batch_size;
+    let crawl_timeout = settings.crawl_timeout;
+    let db_batch_size = settings.db_batch_size;
+    let base_delay = settings.base_delay;
+    let max_delay = settings.max_delay;
+    let adaptive_crawling = settings.adaptive_crawling;
+    let min_crawl_delay = settings.min_crawl_delay;
+
+    let selected_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".to_string();
+
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    default_headers.insert(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7".parse().unwrap());
+    default_headers.insert(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9".parse().unwrap());
+    default_headers.insert("Sec-Ch-Ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"".parse().unwrap());
+    default_headers.insert("Sec-Ch-Ua-Mobile", "?0".parse().unwrap());
+    default_headers.insert("Sec-Ch-Ua-Platform", "\"Windows\"".parse().unwrap());
+    default_headers.insert("Sec-Fetch-Dest", "document".parse().unwrap());
+    default_headers.insert("Sec-Fetch-Mode", "navigate".parse().unwrap());
+    default_headers.insert("Sec-Fetch-Site", "none".parse().unwrap());
+    default_headers.insert("Sec-Fetch-User", "?1".parse().unwrap());
+    default_headers.insert(reqwest::header::UPGRADE_INSECURE_REQUESTS, "1".parse().unwrap());
+    default_headers.insert(reqwest::header::CACHE_CONTROL, "max-age=0".parse().unwrap());
+
+    let client = Client::builder()
+        .cookie_store(true)
+        .user_agent(&selected_user_agent)
+        .default_headers(default_headers)
+        .http1_only() // Bypasses Cloudflare's strict HTTP/2 reqwest fingerprinting
+        .timeout(Duration::from_secs(client_timeout))
+        .connect_timeout(Duration::from_secs(client_connect_timeout))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+
+
+
+    let url_checked = url_check(domain);
+    let base_url = Url::parse(&url_checked).map_err(|_| "Invalid URL")?;
+    let domain = base_url.clone();
+
+    //TODO: Better to check the efficiency of this
+    // INITIAL DATA FETCHING (Robots.txt)
+    let robots_data = robots::get_robots_data(&domain).await;
+    let robots_blocked = robots_data
+        .as_ref()
+        .map(|d| d.blocked_urls.clone())
+        .unwrap_or_default();
+
+    // Emit initial blocked info
+    let _ = app_handle.emit("robots_blocked", &robots_blocked);
+
+    // BACKGROUND TASKS (UI Updates & Favicon)
+    let app_handle_for_spawn = app_handle.clone();
+    let domain_clone = domain.clone();
+
+    tokio::spawn(async move {
+        // Run favicon check in parallel with UI updates
+        let favicon_task = favicon::get_favicon(&domain_clone);
+
+        // Emit robots raw text immediately if we already have it
+        if let Some(data) = robots_data {
+            if let Err(err) = app_handle_for_spawn.emit("robots", (&domain_clone, data.raw_text)) {
+                eprintln!("Failed to emit robots data: {}", err);
+            }
+        } else {
+            let _ = app_handle_for_spawn.emit(
+                "robots",
+                (&domain_clone, vec!["No robots.txt found".to_string()]),
+            );
+        }
+
+        // Wait for favicon
+        let favicon_result = favicon_task.await;
+
+        match favicon_result {
+            Ok(favicon_url) => {
+                let _ = app_handle_for_spawn.emit("favicon", (&domain_clone, favicon_url));
+            }
+            Err(_) => {
+                let _ = app_handle_for_spawn.emit("favicon", (&domain_clone, ""));
+            }
+        }
+    });
+
+    // Create the global URL status registry — shared between the crawler and the link checker
+    // so that URLs already crawled are never re-requested during link checking.
+    // DashMap is used here instead of RwLock<HashMap> to avoid blocking async executor threads.
+    let url_status_registry: Arc<DashMap<String, u16>> = Arc::new(DashMap::with_capacity(4096));
+
+    let link_checker = Arc::new(SharedLinkChecker::new(
+        &settings,
+        Some(selected_user_agent.clone()),
+        url_status_registry.clone(),
+    ));
+    let state = Arc::new(Mutex::new(
+        CrawlerState::new(None)
+            .with_link_checker(link_checker.clone())
+            .with_url_status_registry(url_status_registry),
+    )); // DB is handled separately
+    {
+        let normalized_base = normalize_url(base_url.as_str());
+        let normalized_url_obj = Url::parse(&normalized_base).unwrap_or_else(|_| base_url.clone());
+        
+        let mut state_guard = state.lock().await;
+
+        // List mode seeds every supplied URL at depth 0 and relies on the
+        // discovery gate in url_processor to stop there. Spider mode seeds only
+        // the start URL and discovers the rest.
+        if settings.list_mode && !settings.list_urls.is_empty() {
+            let mut seeded = 0usize;
+            for raw in &settings.list_urls {
+                let normalized = normalize_url(raw);
+                if let Ok(parsed) = Url::parse(&normalized) {
+                    if state_guard.queued_url_set.insert(normalized.clone()) {
+                        state_guard.queue.push_back((parsed, 0));
+                        seeded += 1;
+                    }
+                }
+            }
+            state_guard.total_urls = seeded;
+            tracing::info!("List mode: seeded {} URLs, discovery disabled", seeded);
+        } else {
+            state_guard.queue.push_back((normalized_url_obj, 0)); // Start at depth 0
+            state_guard.queued_url_set.insert(normalized_base.clone());
+            state_guard.total_urls = 1;
+        }
+        // pending_urls is populated at dequeue time (in the main loop batch drain), not here.
+    }
+
+    // DISCOVER URLS FROM SITEMAPS
+    // Include / Exclude from Configuration, compiled once for the whole crawl.
+    let url_filters = UrlFilters::new(&settings.include_patterns, &settings.exclude_patterns);
+    if !url_filters.is_empty() {
+        tracing::info!(
+            "URL filters active — {} include, {} exclude",
+            settings.include_patterns.len(),
+            settings.exclude_patterns.len()
+        );
+    }
+
+    let sitemap_urls = if settings.list_mode {
+        // Pulling in the sitemap would defeat the point of an explicit list.
+        Default::default()
+    } else {
+        sitemap::extract_urls_from_sitemaps(&domain, &client).await
+    };
+    if !sitemap_urls.is_empty() {
+        tracing::info!("Found {} URLs in sitemaps", sitemap_urls.len());
+
+        // The frontend needs the declared list, not just the seeded crawl, so
+        // the Sitemaps view can diff "declared in sitemap" against "actually
+        // reached by the crawl" — that difference is what surfaces orphan URLs
+        // and pages missing from the sitemap.
+        let declared: Vec<String> = sitemap_urls.iter().cloned().collect();
+        if let Err(err) = app_handle.emit("sitemap_urls", &declared) {
+            eprintln!("Failed to emit sitemap urls: {}", err);
+        }
+
+        let mut state_guard = state.lock().await;
+        state_guard.add_discovered_urls(
+            sitemap_urls,
+            &domain,
+            settings.max_depth,
+            settings.max_urls_per_domain,
+            &url_filters,
+        );
+    } else {
+        let empty: Vec<String> = Vec::new();
+        let _ = app_handle.emit("sitemap_urls", &empty);
+    }
+
+    let (db_tx, mut db_rx) = tokio::sync::mpsc::channel(db_batch_size);
+
+    let db_handle = if let Ok(database) = db.as_ref() {
+        let db_pool = database.get_pool();
+        let db_batch_size_clone = db_batch_size;
+        let handle = tokio::spawn(async move {
+            let mut batch_results = Vec::with_capacity(db_batch_size_clone);
+            // Use an interval to ensure periodic flushing regardless of channel activity
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                tokio::select! {
+                    recv_result = db_rx.recv() => {
+                        match recv_result {
+                            Some(result) => {
+                                batch_results.push(result);
+                                if batch_results.len() >= db_batch_size_clone {
+                                    if let Err(e) = database::insert_bulk_crawl_data(
+                                        db_pool.clone(),
+                                        batch_results.drain(..).collect(),
+                                    )
+                                    .await
+                                    {
+                                        tracing::error!("Failed to batch insert results: {}", e);
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if !batch_results.is_empty() {
+                            if let Err(e) = database::insert_bulk_crawl_data(
+                                db_pool.clone(),
+                                batch_results.drain(..).collect(),
+                            )
+                            .await
+                            {
+                                tracing::error!("Failed to flush batch insert results: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            if !batch_results.is_empty() {
+                if let Err(e) = database::insert_bulk_crawl_data(db_pool, batch_results).await {
+                    tracing::error!("Failed to insert remaining results: {}", e);
+                }
+            }
+        });
+        Some(handle)
+    } else {
+        tracing::error!("Database connection failed");
+        None
+    };
+
+
+    let semaphore = Arc::new(Semaphore::new(concurrent_requests));
+    let js_semaphore = Arc::new(Semaphore::new(js_concurrency));
+    let image_semaphore = Arc::new(Semaphore::new(std::cmp::min(concurrent_requests, 50)));
+    // Initialize adaptive delay with base_delay
+    let current_atomic_delay = Arc::new(AtomicU64::new(base_delay));
+    let global_last_request = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+    // Track when the crawler should pause due to rate limiting (epoch millis)
+    let rate_limit_cooldown_until = Arc::new(AtomicU64::new(0));
+
+    // Why the crawl ended, reported to the UI. A crawl that stops on a stall
+    // or a timeout used to look identical to one that finished normally —
+    // the progress bar simply froze and nothing explained it.
+    let mut end_reason = "finished".to_string();
+    let mut end_detail = String::new();
+
+    let crawl_start_time = Instant::now();
+    let mut last_stall_check = Instant::now();
+    let mut last_crawled_count = 0;
+
+    let mut last_log_time = Instant::now();
+
+    while state.lock().await.should_continue() {
+        let control_status = crawl_control.load(Ordering::Relaxed);
+        if control_status == 2 {
+            end_reason = "stopped".to_string();
+            end_detail = "کراول توسط کاربر متوقف شد".to_string();
+            tracing::info!("Crawl stopped by user.");
+            // Empty the queue as well as leaving the loop. Without this, any
+            // in-flight task that finishes after the break would still find
+            // work waiting and the crawl would appear to carry on.
+            let mut guard = state.lock().await;
+            guard.queue.clear();
+            guard.queued_url_set.clear();
+            drop(guard);
+            break;
+        }
+        if control_status == 1 {
+            sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+
+        let to_spawn = {
+            let mut state_guard = state.lock().await;
+            state_guard.cleanup_stale_pending();
+
+            // Check for stalling
+            if last_stall_check.elapsed() > Duration::from_secs(stall_check_interval) {
+                let stalled = state_guard.crawled_urls == last_crawled_count
+                    && state_guard.last_activity.elapsed() > Duration::from_secs(max_pending_time)
+                    && state_guard.queue.is_empty();
+
+                if stalled {
+                    end_reason = "stalled".to_string();
+                    end_detail = format!(
+                        "هیچ پاسخی از سرور نیامد؛ {} درخواست بیش از {} ثانیه بی‌جواب ماند",
+                        state_guard.active_tasks, max_pending_time
+                    );
+                    tracing::info!(
+                        "Crawler stall detected ({} active tasks hung for >{}s). Terminating crawl...",
+                        state_guard.active_tasks,
+                        max_pending_time
+                    );
+                    break;
+                }
+                last_crawled_count = state_guard.crawled_urls;
+                last_stall_check = Instant::now();
+            }
+
+            // Periodic status log
+            if last_log_time.elapsed() > Duration::from_secs(10) {
+                tracing::info!(
+                    "Status - Crawled: {}, Queue: {}, Pending: {}, Active: {}, Failed: {}",
+                    state_guard.crawled_urls,
+                    state_guard.queue.len(),
+                    state_guard.pending_urls.len(),
+                    state_guard.active_tasks,
+                    state_guard.total_failed_count
+                );
+                last_log_time = Instant::now();
+            }
+
+            // Don't spawn more tasks than 2x the concurrency limit to prevent memory bloat
+            // and ensure we don't overwhelm the pending_urls logic.
+            if state_guard.active_tasks >= concurrent_requests * 2 {
+                drop(state_guard);
+                sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+
+            // Check if we're in a rate limit cooldown period
+            let now_epoch_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let cooldown_until = rate_limit_cooldown_until.load(Ordering::Relaxed);
+            if now_epoch_ms < cooldown_until {
+                let wait_ms = cooldown_until - now_epoch_ms;
+                tracing::info!("Rate limit cooldown active. Pausing new tasks for {}ms", wait_ms);
+                drop(state_guard);
+                sleep(Duration::from_millis(wait_ms.min(5000))).await;
+                continue;
+            }
+
+            if state_guard.queue.is_empty() {
+                if state_guard.is_truly_complete() {
+                    break;
+                }
+                drop(state_guard);
+                sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            // Calculate how many we can spawn based on semaphore and current active tasks
+            // But actually, the inner loop handles the semaphore, so we just pull a reasonable batch
+            let available_batch = std::cmp::min(batch_size, state_guard.queue.len());
+            let batch: Vec<(url::Url, usize)> = state_guard.queue.drain(..available_batch).collect();
+            for (url, _) in &batch {
+                let url_str = normalize_url(url.as_str());
+                state_guard.queued_url_set.remove(&url_str);
+                // Move from "queued" to "pending" (actively being fetched).
+                // pending_urls is only populated here so it stays small (≤ batch_size * active rounds),
+                // making all pending_urls lookups cheap regardless of total queue depth.
+                state_guard.pending_urls.insert(url_str, Instant::now());
+            }
+            batch
+        };
+
+        if to_spawn.is_empty() {
+            continue;
+        }
+
+        for (url, depth) in to_spawn {
+            let client_clone = client.clone();
+            let base_url_clone = base_url.clone();
+            let state_clone = state.clone();
+            let crawl_control_clone = crawl_control.clone();
+            let app_handle_clone = app_handle.clone();
+            let semaphore_clone = semaphore.clone();
+            let js_semaphore_clone = js_semaphore.clone();
+            let image_semaphore_clone = image_semaphore.clone();
+            let db_tx_clone = db_tx.clone();
+            let settings_clone = settings.clone();
+            let current_atomic_delay_clone = current_atomic_delay.clone();
+            let rate_limit_cooldown_clone = rate_limit_cooldown_until.clone();
+            let global_last_request_clone = global_last_request.clone();
+
+            tokio::spawn(async move {
+                let url_str = url.to_string();
+                {
+                    let mut state_guard = state_clone.lock().await;
+                    state_guard.active_tasks += 1;
+                    state_guard.active_urls.insert(url_str.clone());
+                }
+                let _permit = semaphore_clone.acquire().await.unwrap();
+
+                loop {
+                    // 1. Wait out any active cooldown FIRST
+                    loop {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let cooldown = rate_limit_cooldown_clone.load(Ordering::Relaxed);
+                        if now_ms < cooldown {
+                            let wait_ms = cooldown - now_ms;
+                            sleep(Duration::from_millis(wait_ms.min(5000))).await;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // 2. Compute dynamic delay right before firing to ensure it has the latest changes
+                    let delay = if adaptive_crawling {
+                        let current_val = current_atomic_delay_clone.load(Ordering::Relaxed);
+                        // Add +/- 20% jitter
+                        let jitter_range = current_val as f32 * 0.2;
+                        let jitter = if jitter_range > 0.0 {
+                            rand::random_range(-jitter_range..jitter_range) as i64
+                        } else {
+                            0
+                        };
+                        (current_val as i64 + jitter).max(0) as u64
+                    } else {
+                        if base_delay < max_delay {
+                            rand::random_range(base_delay..max_delay)
+                        } else {
+                            base_delay
+                        }
+                    };
+
+                    // 3. Apply the strict global stagger (minimum 50ms stagger even if delay = 0)
+                    let effective_delay = std::cmp::max(delay, 50);
+
+                    let global_delay = {
+                        let mut last_req = global_last_request_clone.lock().await;
+                        let now = Instant::now();
+                        let target_time = *last_req + Duration::from_millis(effective_delay);
+                        let wait_time = if now < target_time {
+                            target_time.duration_since(now)
+                        } else {
+                            Duration::from_millis(0)
+                        };
+                        *last_req = std::cmp::max(now, target_time);
+                        wait_time
+                    };
+
+                    if global_delay > Duration::from_millis(0) {
+                        sleep(global_delay).await;
+                    }
+
+                    // 4. Double-check if another task triggered a cooldown while we slept!
+                    // If true, we loop back to the top to wait it out, and then RE-STAGGER to avoid a burst.
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let cooldown = rate_limit_cooldown_clone.load(Ordering::Relaxed);
+                    if now_ms < cooldown {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                let result = process_url(
+                    url.clone(),
+                    depth,
+                    &client_clone,
+                    &base_url_clone,
+                    state_clone.clone(),
+                    &app_handle_clone,
+                    &settings_clone,
+                    js_semaphore_clone,
+                    image_semaphore_clone,
+                    crawl_control_clone.clone(),
+                )
+                .await;
+
+                // Report the outcome of this URL so the footer can show what
+                // is actually happening rather than a frozen percentage.
+                {
+                    let (queued, active, crawled) = {
+                        let g = state_clone.lock().await;
+                        (g.queue.len(), g.active_tasks, g.crawled_urls)
+                    };
+                    let activity = match &result {
+                        Ok(r) => CrawlActivity {
+                            kind: "fetching".to_string(),
+                            url: r.url.clone(),
+                            detail: format!("HTTP {}", r.status_code),
+                            queued,
+                            active,
+                            crawled,
+                        },
+                        Err(e) => CrawlActivity {
+                            kind: "error".to_string(),
+                            url: url.to_string(),
+                            detail: e.to_string(),
+                            queued,
+                            active,
+                            crawled,
+                        },
+                    };
+                    let _ = app_handle_clone.emit("crawl_activity", &activity);
+                }
+
+                if let Ok(crawl_result) = &result {
+                    if adaptive_crawling {
+                        let status = crawl_result.status_code;
+                        if status == 429 || status == 503 {
+                            // Backoff aggressively using fetch_max to avoid race conditions
+                            let current = current_atomic_delay_clone.load(Ordering::Relaxed);
+                            let jitter = rand::random_range(1000..3000);
+                            let new_val = (current.saturating_mul(2).saturating_add(jitter)).min(max_delay).max(5000); 
+                            // Use fetch_max so concurrent 429s only increase, never decrease
+                            current_atomic_delay_clone.fetch_max(new_val, Ordering::Relaxed);
+                            
+                            // Set a global cooldown to pause new task spawning
+                            let cooldown_ms = new_val.min(30000); // Max 30s cooldown
+                            let cooldown_until = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64 + cooldown_ms;
+                            rate_limit_cooldown_clone.fetch_max(cooldown_until, Ordering::Relaxed);
+                            
+                            tracing::warn!("Server responded with {}. Increasing adaptive delay to {}ms and pausing new tasks for {}ms", status, new_val, cooldown_ms);
+
+                            let _ = app_handle_clone.emit(
+                                "crawl_rate_limited",
+                                RateLimitedData { delay_ms: new_val, cooldown_ms, status },
+                            );
+                        } else if status >= 200 && status < 300 {
+                            // Speed up (decrease delay) — 3% per success to stay conservative.
+                            // Recovering faster risks more frequent 429s which trigger
+                            // 5000ms+ cooldowns, hurting overall throughput.
+                            let current = current_atomic_delay_clone.load(Ordering::Relaxed);
+                            let decrement = std::cmp::max((current as f32 * 0.03) as u64, 25);
+                            let new_val = current.saturating_sub(decrement).max(min_crawl_delay);
+                            current_atomic_delay_clone.store(new_val, Ordering::Relaxed);
+                        }
+                    }
+
+                    if let Ok(db_result) = to_database_results(crawl_result) {
+                        let _ = db_tx_clone.send(db_result).await;
+                    }
+                } else if adaptive_crawling {
+                    // Error case (timeout, network error, or detected block)
+                    let current = current_atomic_delay_clone.load(Ordering::Relaxed);
+                    let err_str = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+                    
+                    if err_str.contains("Block") || err_str.contains("Rate Limit") {
+                        // Aggressive backoff for detected blocks
+                        let new_val = (current * 2 + 2000).min(max_delay).max(5000);
+                        current_atomic_delay_clone.store(new_val, Ordering::Relaxed);
+                        
+                        let cooldown_ms = new_val.min(30000);
+                        let cooldown_until = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64 + cooldown_ms;
+                        rate_limit_cooldown_clone.fetch_max(cooldown_until, Ordering::Relaxed);
+                        
+                        tracing::warn!("Block detected in response content. Increasing adaptive delay to {}ms and pausing tasks for {}ms", new_val, cooldown_ms);
+
+                        let _ = app_handle_clone.emit(
+                            "crawl_rate_limited",
+                            RateLimitedData { delay_ms: new_val, cooldown_ms, status: 0 },
+                        );
+                    } else {
+                        // Standard network error - slow down slightly
+                        let new_val = (current + 500).min(max_delay);
+                        current_atomic_delay_clone.store(new_val, Ordering::Relaxed);
+                    }
+                }
+
+                let mut state_guard = state_clone.lock().await;
+                state_guard.pending_urls.remove(&url_str);
+                state_guard.active_tasks = state_guard.active_tasks.saturating_sub(1);
+                state_guard.active_urls.remove(&url_str);
+
+                if let Err(e) = result {
+                    tracing::error!("Failed to process {}: {}", url_str, e);
+                    state_guard.record_failure(FailedUrl {
+                        url: url_str,
+                        error: e,
+                        retries: 0,
+                        depth,
+                        timestamp: Instant::now(),
+                    });
+                }
+            });
+        }
+
+        if crawl_start_time.elapsed() > Duration::from_secs(crawl_timeout) {
+            tracing::info!("Crawl timeout reached, terminating...");
+            app_handle.emit("crawl_interrupted", ()).unwrap_or_default();
+            break;
+        }
+
+        // Small sleep to prevent tight-looping the state lock
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // Final cleanup and status report
+    {
+
+
+
+        let state_guard = state.lock().await;
+        tracing::info!("Crawl completed - Final stats:");
+        tracing::info!("  Total URLs discovered: {}", state_guard.total_urls);
+        tracing::info!("  URLs successfully crawled: {}", state_guard.crawled_urls);
+        tracing::info!("  URLs failed (total): {}", state_guard.total_failed_count);
+        tracing::info!("  URLs failed (retained): {}", state_guard.failed_urls.len());
+        tracing::info!("  URLs still pending: {}", state_guard.pending_urls.len());
+        tracing::info!("  Active tasks remaining: {}", state_guard.active_tasks);
+        tracing::info!("  Unique URL patterns: {}", state_guard.url_patterns.len());
+
+        // Calculate final completion percentage
+        let completed = state_guard.crawled_urls + state_guard.total_failed_count;
+        let final_percentage = if state_guard.total_urls > 0 {
+            (completed as f32 / state_guard.total_urls as f32) * 100.0
+        } else {
+            0.0
+        };
+        tracing::info!("  Final completion: {:.2}%", final_percentage);
+    }
+
+    // Flush any remaining buffered crawl results before completing
+    {
+        let mut state_guard = state.lock().await;
+        if !state_guard.pending_results.is_empty() {
+            let result_data = super::state::CrawlResultData {
+                results: state_guard.pending_results.drain(..).collect(),
+            };
+            if let Err(err) = app_handle.emit("crawl_result", result_data) {
+                eprintln!("Failed to emit final crawl result batch: {}", err);
+            }
+        }
+    }
+
+    drop(db_tx);
+    if let Some(handle) = db_handle {
+        handle.await.unwrap_or_default();
+    }
+
+    // Crawl Analysis: Link Score. Runs automatically at the end of every crawl when
+    // enabled in Settings, and must complete before `crawl_complete` is emitted below
+    // so the frontend's post-crawl refetch already sees the persisted scores.
+    if settings.link_score_enabled {
+        if let Ok(db) = &db {
+            match db.get_all_crawl_data().await {
+                Ok(all_pages) => {
+                    let scores = super::link_score::compute_link_scores(&all_pages);
+                    if let Err(e) = db.store_link_scores(scores).await {
+                        tracing::error!("Failed to persist link scores: {}", e);
+                    }
+                }
+                Err(e) => tracing::error!("Failed to load crawl data for link score: {}", e),
+            }
+        }
+    }
+
+    // Emit final 100% progress update before completion
+    let final_progress = {
+        let state_guard = state.lock().await;
+        // Include in-flight URLs (pending_urls) that didn't finish before stall/timeout triggered.
+        // Without this, stall-terminated crawls report e.g. 97% even though crawl_complete fires.
+        let pending_at_end = state_guard.pending_urls.len();
+        let completed = state_guard.crawled_urls + state_guard.total_failed_count + pending_at_end;
+        let progress = ProgressData {
+            total_urls: std::cmp::max(state_guard.total_urls, 1),
+            crawled_urls: completed,
+            percentage: if state_guard.total_urls > 0 {
+                (completed as f32 / state_guard.total_urls as f32) * 100.0
+            } else {
+                100.0
+            },
+            failed_urls_count: state_guard.total_failed_count,
+            discovered_urls: std::cmp::max(state_guard.total_urls, 1),
+            robots_blocked: Some(robots_blocked),
+        };
+
+        tracing::info!(
+            "Final crawl stats: {} total processed ({} succeeded, {} failed, {} pending at end)",
+            completed,
+            state_guard.crawled_urls,
+            state_guard.total_failed_count,
+            pending_at_end
+        );
+
+        // Say why the crawl ended before reporting it as complete.
+        let _ = app_handle.emit(
+            "crawl_activity",
+            &CrawlActivity {
+                kind: end_reason.clone(),
+                url: String::new(),
+                detail: if end_detail.is_empty() {
+                    format!(
+                        "{} صفحه کراول شد، {} ناموفق",
+                        state_guard.crawled_urls, state_guard.total_failed_count
+                    )
+                } else {
+                    end_detail.clone()
+                },
+                queued: state_guard.queue.len(),
+                active: state_guard.active_tasks,
+                crawled: state_guard.crawled_urls,
+            },
+        );
+
+        if let Err(err) = app_handle.emit("progress_update", progress.clone()) {
+            eprintln!("Failed to emit final progress update: {}", err);
+        }
+
+        progress
+    };
+
+    app_handle
+        .emit("crawl_complete", final_progress)
+        .unwrap_or_default();
+    tracing::info!("Crawl completed.");
+
+    if let Err(e) = database::create_diff_tables() {
+        eprintln!("Failed to create diff tables: {}", e);
+    }
+
+    if let Err(e) = database::clone_batched_crawl_into_persistent_db().await {
+        eprintln!("Failed to clone batched crawl into persistent db: {}", e);
+    }
+
+    // --- RECORD HISTORY (Backend-driven) ---
+    if let Ok(db) = &db {
+        // Idempotent — ensures the table (and any newly-added columns) exist
+        // even if the user has never opened the Dashboard/History tab yet,
+        // which is otherwise the only place this migration gets triggered.
+        if let Err(e) = super::db_deep::db::create_domain_results_table() {
+            tracing::error!("Failed to prepare history table before recording: {}", e);
+        }
+        match db.get_summary_stats().await {
+            Ok(stats) => {
+                let history_entry = super::db_deep::db::DeepCrawlHistory {
+                    id: 0, // Auto-increment
+                    domain: domain.to_string(),
+                    date: chrono::Local::now().to_rfc3339(),
+                    pages: stats["pages"].as_i64().unwrap_or(0) as i32,
+                    errors: stats["errors"].as_i64().unwrap_or(0) as i32,
+                    status: "completed".to_string(),
+                    total_links: stats["total_links"].as_i64().unwrap_or(0) as i32,
+                    total_internal_links: stats["total_internal_links"].as_i64().unwrap_or(0) as i32,
+                    total_external_links: stats["total_external_links"].as_i64().unwrap_or(0) as i32,
+                    indexable_pages: stats["indexable_pages"].as_i64().unwrap_or(0) as i32,
+                    not_indexable_pages: stats["not_indexable_pages"].as_i64().unwrap_or(0) as i32,
+                    total_css: stats["total_css"].as_i64().unwrap_or(0) as i32,
+                    total_javascript: stats["total_javascript"].as_i64().unwrap_or(0) as i32,
+                    total_images: stats["total_images"].as_i64().unwrap_or(0) as i32,
+                    total_redirects: stats["total_redirects"].as_i64().unwrap_or(0) as i32,
+                    missing_title: stats["missing_title"].as_i64().unwrap_or(0) as i32,
+                    missing_description: stats["missing_description"].as_i64().unwrap_or(0) as i32,
+                    avg_response_time: stats["avg_response_time"].as_i64().unwrap_or(0) as i32,
+                    max_crawl_depth: stats["max_crawl_depth"].as_i64().unwrap_or(0) as i32,
+                    total_secure_pages: stats["total_secure_pages"].as_i64().unwrap_or(0) as i32,
+                    total_schema_pages: stats["total_schema_pages"].as_i64().unwrap_or(0) as i32,
+                    total_mobile_pages: stats["total_mobile_pages"].as_i64().unwrap_or(0) as i32,
+                    missing_h1: stats["missing_h1"].as_i64().unwrap_or(0) as i32,
+                    missing_canonical: stats["missing_canonical"].as_i64().unwrap_or(0) as i32,
+                    thin_content_pages: stats["thin_content_pages"].as_i64().unwrap_or(0) as i32,
+                    noindex_pages: stats["noindex_pages"].as_i64().unwrap_or(0) as i32,
+                    mixed_content_pages: stats["mixed_content_pages"].as_i64().unwrap_or(0) as i32,
+                    cookies_pages: stats["cookies_pages"].as_i64().unwrap_or(0) as i32,
+                    avg_word_count: stats["avg_word_count"].as_i64().unwrap_or(0) as i32,
+                    avg_readability: stats["avg_readability"].as_i64().unwrap_or(0) as i32,
+                    avg_page_size_kb: stats["avg_page_size_kb"].as_i64().unwrap_or(0) as i32,
+                    duplicate_titles: stats["duplicate_titles"].as_i64().unwrap_or(0) as i32,
+                    duplicate_descriptions: stats["duplicate_descriptions"].as_i64().unwrap_or(0) as i32,
+                    status_2xx: stats["status_2xx"].as_i64().unwrap_or(0) as i32,
+                    status_3xx: stats["status_3xx"].as_i64().unwrap_or(0) as i32,
+                    status_4xx: stats["status_4xx"].as_i64().unwrap_or(0) as i32,
+                    status_5xx: stats["status_5xx"].as_i64().unwrap_or(0) as i32,
+                };
+                
+                println!("Backend recording history for {}: {:?}", domain, history_entry);
+                if let Err(e) = super::db_deep::db::create_domain_results_history(vec![history_entry]) {
+                    eprintln!("Failed to record history in backend: {}", e);
+                }
+            }
+            Err(e) => eprintln!("Failed to get summary stats for history: {}", e),
+        }
+    }
+
+    Ok(())
+}

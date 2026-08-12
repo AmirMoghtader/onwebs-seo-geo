@@ -1,0 +1,237 @@
+use once_cell::sync::Lazy;
+use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use super::links_selector::is_same_or_subdomain;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InternalExternalLinks {
+    pub internal: LinksAnchors,
+    pub external: LinksAnchors,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LinksAnchors {
+    pub links: Vec<String>,
+    pub inlinks: LinkTypes,
+    pub anchors: Vec<String>,
+    pub rels: Vec<Option<String>>,
+    pub titles: Vec<Option<String>>,
+    pub targets: Vec<Option<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LinkTypes {
+    pub relative: Vec<String>,
+    pub absolute: Vec<String>,
+}
+
+static LINK_SELECTOR: Lazy<Selector> = Lazy::new(|| Selector::parse("a").unwrap());
+
+/// Extracts internal and external links from an HTML document.
+///
+/// # Arguments
+/// * `document` - The parsed HTML document.
+/// * `resolve_url` - The URL of the current page, used to resolve relative links.
+/// * `scope_url` - The base URL of the scan (root domain), used to check for internal/external status.
+///
+/// # Returns
+/// An `Option<InternalExternalLinks>` containing internal and external links and their anchor texts.
+pub fn extract_internal_external_links(
+    document: &Html,
+    resolve_url: &Url,
+    scope_url: &Url,
+) -> Option<InternalExternalLinks> {
+    // Extract all links and their attributes
+    let (
+        internal_links,
+        internal_anchors,
+        external_links,
+        external_anchors,
+        absolute_links,
+        internal_rels,
+        internal_titles,
+        internal_targets,
+        external_rels,
+        external_titles,
+        external_targets,
+    ) = document.select(&LINK_SELECTOR).fold(
+        (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        |(
+            mut internal_links,
+            mut internal_anchors,
+            mut external_links,
+            mut external_anchors,
+            mut absolute_links,
+            mut internal_rels,
+            mut internal_titles,
+            mut internal_targets,
+            mut external_rels,
+            mut external_titles,
+            mut external_targets,
+        ),
+         element| {
+            if let Some(href) = element.value().attr("href") {
+                // Resolve the URL (handle relative and absolute URLs)
+                // Use the CURRENT page URL for resolution
+                let full_url = resolve_relative_url(href, resolve_url);
+
+                // Get the anchor text
+                let anchor_text = element.text().collect::<String>();
+
+                // Get the optional attributes (these will be None if attribute doesn't exist)
+                let rel = element.value().attr("rel").map(|s| s.to_string());
+                let title = element.value().attr("title").map(|s| s.to_string());
+                let target = element.value().attr("target").map(|s| s.to_string());
+
+                // Classify as internal or external
+                // Use the SCOPE URL (root domain) for classification
+                if is_internal_link(&full_url, scope_url) {
+                    internal_links.push(full_url.to_string());
+                    internal_anchors.push(anchor_text);
+                    internal_rels.push(rel);
+                    internal_titles.push(title);
+                    internal_targets.push(target);
+                } else {
+                    external_links.push(full_url.to_string());
+                    external_anchors.push(anchor_text);
+                    external_rels.push(rel);
+                    external_titles.push(title);
+                    external_targets.push(target);
+                }
+
+                // Add the absolute URL to the list
+                absolute_links.push(full_url.to_string());
+            }
+            (
+                internal_links,
+                internal_anchors,
+                external_links,
+                external_anchors,
+                absolute_links,
+                internal_rels,
+                internal_titles,
+                internal_targets,
+                external_rels,
+                external_titles,
+                external_targets,
+            )
+        },
+    );
+
+    Some(InternalExternalLinks {
+        internal: LinksAnchors {
+            links: internal_links.clone(),
+            inlinks: LinkTypes {
+                relative: internal_links,
+                absolute: absolute_links.clone(),
+            },
+            anchors: internal_anchors,
+            rels: internal_rels,
+            titles: internal_titles,
+            targets: internal_targets,
+        },
+        external: LinksAnchors {
+            links: external_links.clone(),
+            inlinks: LinkTypes {
+                relative: external_links,
+                absolute: absolute_links,
+            },
+            anchors: external_anchors,
+            rels: external_rels,
+            titles: external_titles,
+            targets: external_targets,
+        },
+    })
+}
+
+
+/// Resolves a URL relative to a base URL.
+///
+/// # Arguments
+/// * `href` - The URL to resolve (can be relative or absolute).
+/// * `base_url` - The base URL to resolve against.
+///
+/// # Returns
+/// A resolved `Url`.
+fn resolve_relative_url(href: &str, base_url: &Url) -> Url {
+    Url::parse(href).unwrap_or_else(|_| base_url.join(href).unwrap_or_else(|_| base_url.clone()))
+}
+
+/// Checks if a URL is internal (i.e., has the same domain as the base URL).
+///
+/// # Arguments
+/// * `url` - The URL to check.
+/// * `base_url` - The base URL to compare against.
+///
+/// # Returns
+/// `true` if the URL is internal, `false` otherwise.
+fn is_internal_link(url: &Url, base_url: &Url) -> bool {
+    let base_domain = base_url.domain().unwrap_or("");
+    let url_domain = url.domain().unwrap_or("");
+    if base_domain.is_empty() || url_domain.is_empty() {
+        return false;
+    }
+    is_same_or_subdomain(url_domain, base_domain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_internal_link() {
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        // Same domain
+        let url1 = Url::parse("https://example.com/page").unwrap();
+        assert!(is_internal_link(&url1, &base_url));
+
+        // Subdomain (should be internal now)
+        let url2 = Url::parse("https://blog.example.com/post").unwrap();
+        assert!(is_internal_link(&url2, &base_url));
+
+        // External domain
+        let url3 = Url::parse("https://google.com").unwrap();
+        assert!(!is_internal_link(&url3, &base_url));
+
+        // Different TLD
+        let url4 = Url::parse("https://example.org").unwrap();
+        assert!(!is_internal_link(&url4, &base_url));
+    }
+
+    #[test]
+    fn test_is_internal_link_rejects_suffix_lookalike_domain() {
+        // Regression: a naive `ends_with` check would wrongly treat this as internal
+        // since "fakeexample.com" ends with "example.com".
+        let base_url = Url::parse("https://example.com").unwrap();
+        let lookalike = Url::parse("https://fakeexample.com/page").unwrap();
+        assert!(!is_internal_link(&lookalike, &base_url));
+    }
+
+    #[test]
+    fn test_is_internal_link_handles_www_mismatch() {
+        // Regression: crawling from a `www.` root shouldn't classify the bare
+        // domain (or vice versa) as external.
+        let base_url = Url::parse("https://www.example.com").unwrap();
+        let bare = Url::parse("https://example.com/page").unwrap();
+        assert!(is_internal_link(&bare, &base_url));
+
+        let base_url_bare = Url::parse("https://example.com").unwrap();
+        let with_www = Url::parse("https://www.example.com/page").unwrap();
+        assert!(is_internal_link(&with_www, &base_url_bare));
+    }
+}

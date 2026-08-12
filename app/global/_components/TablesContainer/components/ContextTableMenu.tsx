@@ -1,0 +1,264 @@
+// @ts-nocheck
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { FaClipboard, FaKey, FaRegClipboard } from "react-icons/fa6";
+import { GoSearch } from "react-icons/go";
+import { MdVerified } from "react-icons/md";
+import {
+  IoLogoGoogle,
+  IoLogoMicrosoft,
+  IoLogoYoutube,
+  IoLogoTwitter,
+  IoLogoReddit,
+  IoLogoGithub,
+  IoLogoLinkedin,
+  IoEarthSharp,
+} from "react-icons/io5";
+import { PiGooglePodcastsLogo } from "react-icons/pi";
+import { SiBrave, SiDuckduckgo, SiEcosia } from "react-icons/si";
+import { toast } from "sonner";
+import { DiYahooSmall } from "react-icons/di";
+import { LiaKeySolid } from "react-icons/lia";
+import { invoke } from "@tauri-apps/api/core";
+import useRankinInfoStore from "@/store/RankingInfoStore";
+import useGSCStatusStore from "@/store/GSCStatusStore";
+
+export default function ContextTableMenu({ children, data }) {
+  function handleCopyToClipboard() {
+    navigator.clipboard.writeText(data);
+    toast.success("در کلیپ‌بورد کپی شد");
+  }
+
+  // GLOBAL RANKING INFO STORE
+  const { addItem, setActiveSidebarTab } = useRankinInfoStore();
+
+  // GSC STATUS STORE - to refresh status when we successfully fetch data
+  const { updateStatus } = useGSCStatusStore();
+
+  const gscURL = `https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3A${data}&page=*${data}`;
+
+  // Search engine URLs
+  const searchEngines = [
+    {
+      name: "Google",
+      icon: <IoLogoGoogle className="mr-2" />,
+      url: `https://www.google.com/search?q=${data}`,
+    },
+    {
+      name: "Bing",
+      icon: <IoLogoMicrosoft className="mr-2" />,
+      url: `https://www.bing.com/search?q=${data}`,
+    },
+    {
+      name: "DuckDuckGo",
+      icon: <SiDuckduckgo className="mr-2" />,
+      url: `https://duckduckgo.com/?q=${data}`,
+    },
+    {
+      name: "Yahoo",
+      icon: <DiYahooSmall className="mr-2" />,
+      url: `https://search.yahoo.com/search?p=${data}`,
+    },
+    {
+      name: "Ecosia",
+      icon: <SiEcosia className="mr-2" />,
+      url: `https://www.ecosia.org/search?q=${data}`,
+    },
+    {
+      name: "Brave",
+      icon: <SiBrave className="mr-2" />,
+      url: `https://search.brave.com/search?q=${data}`,
+    },
+    {
+      name: "Ask",
+      icon: <GoSearch className="mr-2" />,
+      url: `https://www.ask.com/web?q=${data}`,
+    },
+    {
+      name: "GitHub",
+      icon: <IoLogoGithub className="mr-2" />,
+      url: `https://github.com/search?q=${data}`,
+    },
+    {
+      name: "LinkedIn",
+      icon: <IoLogoLinkedin className="mr-2" />,
+      url: `https://www.linkedin.com/search/results/all/?keywords=${data}`,
+    },
+    {
+      name: "Wayback Machine",
+      icon: <IoEarthSharp className="mr-2" />,
+      url: `https://web.archive.org/web/*/${data}`,
+    },
+  ];
+
+  // Validation tools
+  const validationTools = [
+    {
+      name: "Schema Validator",
+      url: `https://validator.schema.org/#url=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Rich Results Test",
+      url: `https://search.google.com/test/rich-results?url=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "OpenGraph Debugger",
+      url: `https://www.opengraph.xyz/url/${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Facebook Sharing Debugger",
+      url: `https://developers.facebook.com/tools/debug/?q=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Twitter Card Validator",
+      url: `https://cards-dev.twitter.com/validator`,
+    },
+    {
+      name: "LinkedIn Post Inspector",
+      url: `https://www.linkedin.com/post-inspector/inspect/${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Meta Tags Checker",
+      url: `https://metatags.io/?url=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Mobile-Friendly Test",
+      url: `https://search.google.com/test/mobile-friendly?url=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "PageSpeed Insights",
+      url: `https://pagespeed.web.dev/analysis?url=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "Security Headers",
+      url: `https://securityheaders.com/?q=${encodeURIComponent(data)}`,
+    },
+    {
+      name: "SSL Server Test",
+      url: `https://www.ssllabs.com/ssltest/analyze.html?d=${encodeURIComponent(data)}`,
+    },
+  ];
+
+  const url = data;
+
+  async function fetchQueries() {
+    // Implement query fetching logic here
+    try {
+      // Fetch queries logic here
+      const result: MatchedDataItem[] = await invoke("call_gsc_match_url", {
+        url,
+      });
+      addItem({
+        url,
+        queries: result,
+      });
+      setActiveSidebarTab("queries");
+
+      // Since we successfully fetched GSC data, refresh the GSC status
+      // This will update the ConsoleLog component in real-time
+      try {
+        const gscCredentials = await invoke("read_credentials_file");
+        updateStatus(gscCredentials);
+      } catch (gscError) {
+        // Silently handle GSC status refresh errors
+      }
+    } catch (error) {
+      console.error("Error fetching queries:", error);
+    }
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="text-xs rounded-sm p-0 m-0 dark:bg-brand-darker dark:border-brand-dark w-44">
+        <ContextMenuItem onClick={handleCopyToClipboard} className="text-xs">
+          <FaRegClipboard className="mr-2" /> کپی URL
+        </ContextMenuItem>
+
+        <ContextMenuSeparator className="p-0 m-0 dark:bg-brand-dark" />
+
+        <a
+          className="flex items-center text-xs w-full"
+          href={data}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <ContextMenuItem className="text-xs cursor-pointer w-full">
+            <PiGooglePodcastsLogo className="mr-2" /> باز کردن URL
+          </ContextMenuItem>
+        </a>
+
+        <ContextMenuSub>
+          <ContextMenuSubTrigger className="text-xs">
+            <GoSearch className="mr-2" /> جستجو در...
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48 text-xs dark:bg-brand-darker dark:border-brand-dark">
+            {searchEngines.map((engine, index) => (
+              <a
+                key={index}
+                className="flex items-center w-full cursor-pointer hover:bg-gray-100 dark:hover:bg-brand-dark"
+                href={engine.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ContextMenuItem className="text-xs w-full cursor-pointer">
+                  {engine.icon}
+                  {engine.name}
+                </ContextMenuItem>
+              </a>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+
+        <ContextMenuSub>
+          <ContextMenuSubTrigger className="text-xs">
+            <MdVerified className="mr-2" /> اعتبارسنجی با...
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-56 text-xs dark:bg-brand-darker dark:border-brand-dark">
+            {validationTools.map((tool, index) => (
+              <a
+                key={index}
+                className="flex items-center w-full cursor-pointer hover:bg-gray-100 dark:hover:bg-brand-dark"
+                href={tool.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ContextMenuItem className="text-xs w-full cursor-pointer">
+                  {tool.name}
+                </ContextMenuItem>
+              </a>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+
+        <ContextMenuSeparator className="p-0 m-0 dark:bg-brand-dark" />
+        <ContextMenuItem
+          onClick={fetchQueries}
+          className="text-xs cursor-pointer"
+        >
+          <LiaKeySolid className="mr-2" /> مشاهده Queryها
+        </ContextMenuItem>
+        <ContextMenuSeparator className="p-0 m-0 dark:bg-brand-dark" />
+
+        <ContextMenuItem className="text-xs">
+          <a
+            className="flex items-center"
+            href={gscURL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <PiGooglePodcastsLogo className="mr-2" /> باز کردن در Search Console
+          </a>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}

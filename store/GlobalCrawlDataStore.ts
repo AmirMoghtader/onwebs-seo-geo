@@ -1,0 +1,734 @@
+// @ts-nocheck
+import { create } from "zustand";
+import { shallow } from "zustand/shallow";
+import { useCallback } from "react";
+
+interface PageDetails {
+  url: string;
+  // ... other page details properties
+}
+
+interface StreamingUpdate {
+  result?: PageDetails;
+  progress?: {
+    crawled: number;
+    total: number;
+  };
+  metadata?: Record<string, any>;
+}
+
+interface CrawlStore {
+  // State properties
+  crawlData: PageDetails[];
+  crawlDataVersion: number;
+  domainCrawlLoading: boolean;
+  crawlerType: string;
+  issues: string[];
+  statusCodes: string[];
+  headingsH1: string[];
+  headingsH2: string[];
+  issueRow: string[];
+  selectedTableURL: string[];
+  javascript: string[];
+  css: string[];
+  robots: string[];
+  sitemaps: string[];
+  isGeneratingExcel: boolean;
+  summary: string[];
+  isFinishedDeepCrawl: boolean;
+  genericChart: string;
+  issuesView: string;
+  /**
+   * Set when an overview tile / dashboard counter is clicked, so the main table
+   * can narrow itself to just those rows. `null` means no tile filter active.
+   */
+  tableFilter: { kind: string; label: string } | null;
+  /**
+   * Explicit allow-list of URLs for the main table, published by panels whose
+   * selection is a set of addresses rather than a rule the table could re-run
+   * on its own (the sitemap buckets). `null` means no URL filter; an empty
+   * array legitimately means "nothing matches".
+   */
+  tableUrlFilter: string[] | null;
+  issuesData: string[];
+  crawlSessionTotalArray: string[];
+  isExtracting: boolean;
+  totalUrlsCrawled: number;
+  streamedCrawledPages: number;
+  streamedTotalPages: number;
+  // Authoritative post-crawl stats read straight from SQLite (COUNT(*) etc.).
+  // Populated once, right after `crawl_complete` fires, and consumed by every
+  // widget that shows a "pages crawled" figure (Summary, Overview, Footer) so
+  // they can never disagree with each other. Null until it's fetched, in which
+  // case widgets should fall back to the live streamed counters.
+  finalCrawlStats: {
+    pages: number;
+    total_internal_links: number;
+    total_external_links: number;
+    total_links: number;
+    indexable_pages: number;
+    not_indexable_pages: number;
+    status_2xx?: number;
+    status_3xx?: number;
+    status_4xx?: number;
+    status_5xx?: number;
+  } | null;
+  deepCrawlTab: string;
+  inlinks: string[];
+  outlinks: string[];
+  robotsBlocked: string[];
+  cookies: string[];
+  favicon: string[];
+  aggregatedData: {
+    images: any[];
+    scripts: string[];
+    css: string[];
+    internalLinks: any[];
+    externalLinks: any[];
+    keywords: any[];
+    redirects: any[];
+    cwv: any[];
+    files: any[];
+    customSearch: any[];
+  };
+  setAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) => void;
+  appendAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) => void;
+  maxUrlsStored: number;
+  isPaused: boolean;
+  isStopped: boolean;
+
+  setDomainCrawlData: (data: PageDetails[]) => void;
+  addDomainCrawlResult: (result: PageDetails | PageDetails[]) => void;
+  clearDomainCrawlData: () => void;
+  setDomainCrawlLoading: (loading: boolean) => void;
+  setCrawlerType: (type: string) => void;
+  setIssues: (issues: string[]) => void;
+  setStatusCodes: (codes: string[]) => void;
+  setHeadingsH1: (headings: string[]) => void;
+  setHeadingsH2: (headings: string[]) => void;
+  setIssueRow: (row: string[]) => void;
+  setSelectedTableURL: (row: string[]) => void;
+  setJavascript: (row: string[]) => void;
+  setCss: (row: string[]) => void;
+  setRobots: (row: string[]) => void;
+  setSitemaps: (row: string[]) => void;
+  setIsGeneratingExcel: (isGenerating: boolean) => void;
+  setSummary: (summary: string[]) => void;
+  setFinishedDeepCrawl: (isFinished: boolean) => void;
+  setGenericChart: (chart: string) => void;
+  setIssuesView: (view: string) => void;
+  setTableFilter: (f: { kind: string; label: string } | null) => void;
+  setTableUrlFilter: (urls: string[] | null) => void;
+  setIssuesData: (data: string[]) => void;
+  setCrawlSessionTotalArray: (data: string[]) => void;
+  setIsExtracting: (isExtracting: boolean) => void;
+  setTotalUrlsCrawled: (total: number) => void;
+  setStreamedCrawledPages: (pages: number) => void;
+  setStreamedTotalPages: (pages: number) => void;
+  setFinalCrawlStats: (stats: CrawlStore["finalCrawlStats"]) => void;
+  setDeepCrawlTab: (tab: string) => void;
+  setInlinks: (links: string[]) => void;
+  setOutlinks: (links: string[]) => void;
+  setRobotsBlocked: (links: string[]) => void;
+  setCookies: (cookies: string[]) => void;
+  setFavicon: (favicon: string) => void;
+  updateStreamingData: (
+    result: PageDetails,
+    crawledPages: number,
+    totalPages: number,
+  ) => void;
+
+  // New action groups
+  actions: {
+    data: {
+      setDomainCrawlData: (data: PageDetails[]) => void;
+      addDomainCrawlResult: (result: PageDetails | PageDetails[]) => void;
+      clearDomainCrawlData: () => void;
+      setIssues: (issues: string[]) => void;
+      setStatusCodes: (codes: string[]) => void;
+      setHeadingsH1: (headings: string[]) => void;
+      setHeadingsH2: (headings: string[]) => void;
+      setIssueRow: (row: string[]) => void;
+      setSelectedTableURL: (row: string[]) => void;
+      setJavascript: (row: string[]) => void;
+      setCss: (row: string[]) => void;
+      setRobots: (row: string[]) => void;
+      setSitemaps: (row: string[]) => void;
+      setSummary: (summary: string[]) => void;
+      setIssuesData: (data: string[]) => void;
+      setCrawlSessionTotalArray: (data: string[]) => void;
+      setInlinks: (links: string[]) => void;
+      setOutlinks: (links: string[]) => void;
+      setRobotsBlocked: (links: string[]) => void;
+      setCookies: (cookies: string[]) => void;
+      setFavicon: (favicon: string) => void;
+      selectURL: (url: string) => void;
+      setAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) => void;
+      appendAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) => void;
+      fetchMaxUrlsStored: () => Promise<void>;
+    };
+    ui: {
+      setGenericChart: (chart: string) => void;
+      setIssuesView: (view: string) => void;
+    setTableFilter: (f: { kind: string; label: string } | null) => void;
+      setTableUrlFilter: (urls: string[] | null) => void;
+      setDeepCrawlTab: (tab: string) => void;
+    };
+    status: {
+      setDomainCrawlLoading: (loading: boolean) => void;
+      setIsGeneratingExcel: (isGenerating: boolean) => void;
+      setFinishedDeepCrawl: (isFinished: boolean) => void;
+      setIsExtracting: (isExtracting: boolean) => void;
+      setCrawlerType: (type: string) => void;
+      setIsPaused: (isPaused: boolean) => void;
+      setIsStopped: (isStopped: boolean) => void;
+    };
+    progress: {
+      setTotalUrlsCrawled: (total: number) => void;
+      setStreamedCrawledPages: (pages: number) => void;
+      setStreamedTotalPages: (pages: number) => void;
+      setFinalCrawlStats: (stats: CrawlStore["finalCrawlStats"]) => void;
+      updateStreaming: (update: StreamingUpdate) => void;
+    };
+  };
+}
+
+// Utility function to create setters dynamically
+const createSetter =
+  <T>(key: keyof CrawlStore) =>
+  (value: T) =>
+    useGlobalCrawlStore.setState({ [key]: value } as any);
+
+// Create the Zustand store
+const useGlobalCrawlStore = create<CrawlStore>((set, get) => {
+  // Common setter functions
+  const setters = {
+    setDomainCrawlData: createSetter<PageDetails[]>("crawlData"),
+    setAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) =>
+      set((state) => ({
+        aggregatedData: {
+          ...state.aggregatedData,
+          ...data,
+        },
+      })),
+    appendAggregatedData: (data: Partial<CrawlStore["aggregatedData"]>) =>
+      set((state) => {
+        const merged: CrawlStore["aggregatedData"] = { ...state.aggregatedData };
+        for (const key of Object.keys(data) as Array<keyof typeof data>) {
+          const incoming = data[key];
+          if (Array.isArray(incoming) && Array.isArray(merged[key])) {
+            (merged as any)[key] = [...(merged[key] as any[]), ...incoming];
+          } else if (incoming !== undefined) {
+            (merged as any)[key] = incoming;
+          }
+        }
+        return { aggregatedData: merged };
+      }),
+    fetchMaxUrlsStored: async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const settings: any = await invoke("get_settings_command");
+        if (settings && settings.max_urls_stored) {
+          useGlobalCrawlStore.setState({
+            maxUrlsStored: settings.max_urls_stored,
+          });
+          console.log("Max URLs Stored:", settings.max_urls_stored);
+        }
+      } catch (error) {
+        console.error("Failed to fetch maxUrlsStored:", error);
+      }
+    },
+    // Strip the massive inoutlinks_status_codes (all links per page) before
+    // storing in the JS heap. This field is only needed on-demand via selectURL.
+    stripLinkData: (page: any) => {
+      if (page?.inoutlinks_status_codes) {
+        const { inoutlinks_status_codes, ...rest } = page;
+        return rest;
+      }
+      return page;
+    },
+    addDomainCrawlResult: (resultOrBatch: PageDetails | PageDetails[]) =>
+      set((state) => {
+        const results = Array.isArray(resultOrBatch)
+          ? resultOrBatch
+          : [resultOrBatch];
+        if (results.length === 0) return state;
+
+        // Build the visited set from existing state — never mutate state directly.
+        // Use existing visitedUrls if available, else rebuild from crawlData.
+        const existingVisited: Set<string> =
+          state.visitedUrls instanceof Set
+            ? state.visitedUrls
+            : new Set<string>(
+                (state.crawlData || []).map((item: any) => item.url),
+              );
+
+        // Filter to only new URLs
+        const newResults = results.filter((r) => !existingVisited.has(r.url));
+        if (newResults.length === 0) return state;
+
+        for (const r of newResults) {
+          // CRITICAL: Flatten string to prevent V8 sliced-string memory leak.
+          // r.url is a slice of a massive JSON IPC payload. Force a new string allocation
+          // so the original payload buffer can be garbage collected.
+          existingVisited.add((" " + r.url).slice(1));
+        }
+
+        // Strip heavy link data from each result before storing in the heap ring buffer
+        const stripped = newResults.map((r) => setters.stripLinkData(r));
+
+        // Max cap: keep only the first MAX_CRAWL_ROWS in the JS heap.
+        // This is purely for showing crawl activity while the crawl is running.
+        // After crawl completion TablesContainer fetches all data via paginated DB queries,
+        // so no data is ever lost — everything is in SQLite regardless of this cap.
+        const MAX_CRAWL_ROWS = state.maxUrlsStored || 5000;
+
+        if (state.crawlData.length >= MAX_CRAWL_ROWS) {
+          // Cap already reached — update visitedUrls so deduplication stays accurate
+          // but don't grow the array any further.
+          return { visitedUrls: existingVisited };
+        }
+
+        const combined = state.crawlData.concat(stripped);
+        const capped =
+          combined.length > MAX_CRAWL_ROWS
+            ? combined.slice(0, MAX_CRAWL_ROWS)
+            : combined;
+
+        return { crawlData: capped, crawlDataVersion: state.crawlDataVersion + 1, visitedUrls: existingVisited };
+      }),
+    clearDomainCrawlData: () =>
+      set({
+        crawlData: [],
+        visitedUrls: new Set(),
+        finalCrawlStats: null,
+        // Filters name URLs from the crawl that is being thrown away; carried
+        // into the next one they would hide every fresh row.
+        tableFilter: null,
+        tableUrlFilter: null,
+        aggregatedData: {
+          images: [],
+          scripts: [],
+          css: [],
+          internalLinks: [],
+          externalLinks: [],
+          keywords: [],
+          redirects: [],
+          cwv: [],
+          files: [],
+          customSearch: [],
+        },
+      }),
+    setDomainCrawlLoading: createSetter<boolean>("domainCrawlLoading"),
+    setCrawlerType: createSetter<string>("crawlerType"),
+    setIssues: createSetter<string[]>("issues"),
+    setStatusCodes: createSetter<string[]>("statusCodes"),
+    setHeadingsH1: createSetter<string[]>("headingsH1"),
+    setHeadingsH2: createSetter<string[]>("headingsH2"),
+    setIssueRow: createSetter<string[]>("issueRow"),
+    setSelectedTableURL: createSetter<string[]>("selectedTableURL"),
+    setJavascript: createSetter<string[]>("javascript"),
+    setCss: createSetter<string[]>("css"),
+    setRobots: createSetter<string[]>("robots"),
+    setSitemaps: createSetter<string[]>("sitemaps"),
+    setIsGeneratingExcel: createSetter<boolean>("isGeneratingExcel"),
+    setSummary: createSetter<string[]>("summary"),
+    setFinishedDeepCrawl: createSetter<boolean>("isFinishedDeepCrawl"),
+    setGenericChart: createSetter<string>("genericChart"),
+    setIssuesView: createSetter<string>("issuesView"),
+    // A rule-based filter and an explicit URL set are two answers to the same
+    // question, so publishing a rule retires whatever URL set was active —
+    // otherwise a sitemap bucket keeps silently intersecting with the tile the
+    // user just clicked. Panels that want both publish the rule first.
+    setTableFilter: (f: { kind: string; label: string } | null) =>
+      set({ tableFilter: f, tableUrlFilter: null }),
+    setTableUrlFilter: createSetter<string[] | null>("tableUrlFilter"),
+    setIssuesData: createSetter<string[]>("issuesData"),
+    setCrawlSessionTotalArray: createSetter<string[]>("crawlSessionTotalArray"),
+    setIsExtracting: createSetter<boolean>("isExtracting"),
+    setTotalUrlsCrawled: createSetter<number>("totalUrlsCrawled"),
+    setStreamedCrawledPages: createSetter<number>("streamedCrawledPages"),
+    setStreamedTotalPages: createSetter<number>("streamedTotalPages"),
+    setFinalCrawlStats: createSetter<CrawlStore["finalCrawlStats"]>("finalCrawlStats"),
+    setDeepCrawlTab: createSetter<string>("deepCrawlTab"),
+    setInlinks: createSetter<string[]>("inlinks"),
+    setOutlinks: createSetter<string[]>("outlinks"),
+    setRobotsBlocked: createSetter<string[]>("robotsBlocked"),
+    setCookies: createSetter<string[]>("cookies"),
+    setFavicon: createSetter<string>("favicon"),
+    setIsPaused: createSetter<boolean>("isPaused"),
+    setIsStopped: createSetter<boolean>("isStopped"),
+
+    updateStreamingData: (
+      result: PageDetails,
+      crawledPages: number,
+      totalPages: number,
+    ) =>
+      set((state) => {
+        const existingVisited: Set<string> =
+          state.visitedUrls instanceof Set
+            ? state.visitedUrls
+            : new Set<string>(
+                (state.crawlData || []).map((item: any) => item.url),
+              );
+
+        if (existingVisited.has(result.url)) {
+          return {
+            streamedCrawledPages: crawledPages,
+            streamedTotalPages: totalPages,
+          };
+        }
+
+        if (!existingVisited.has(result.url)) {
+          existingVisited.add(result.url);
+        }
+
+        const MAX_CRAWL_ROWS = state.maxUrlsStored || 5000;
+        let newCrawlData = state.crawlData;
+        let newVersion = state.crawlDataVersion;
+
+        if (newCrawlData.length < MAX_CRAWL_ROWS) {
+          newCrawlData = newCrawlData.concat([setters.stripLinkData(result)]);
+          newVersion = state.crawlDataVersion + 1;
+        }
+
+        return {
+          crawlData: newCrawlData,
+          crawlDataVersion: newVersion,
+          visitedUrls: existingVisited,
+          streamedCrawledPages: crawledPages,
+          streamedTotalPages: totalPages,
+        };
+      }),
+  };
+
+  return {
+    // Initial State
+    isPaused: false,
+    isStopped: false,
+    crawlData: [],
+    crawlDataVersion: 0,
+    aggregatedData: {
+      images: [],
+      scripts: [],
+      css: [],
+      internalLinks: [],
+      externalLinks: [],
+      keywords: [],
+      redirects: [],
+      cwv: [],
+      files: [],
+      customSearch: [],
+    },
+    domainCrawlLoading: false,
+    crawlerType: "spider",
+    issues: [],
+    statusCodes: [],
+    headingsH1: [],
+    headingsH2: [],
+    issueRow: [],
+    selectedTableURL: [],
+    javascript: [],
+    css: [],
+    robots: [],
+    sitemaps: [],
+    isGeneratingExcel: false,
+    summary: [],
+    isFinishedDeepCrawl: false,
+    genericChart: "",
+    issuesView: "",
+    tableFilter: null,
+    tableUrlFilter: null,
+    issuesData: [],
+    crawlSessionTotalArray: [],
+    isExtracting: false,
+    totalUrlsCrawled: 0,
+    streamedCrawledPages: 0,
+    streamedTotalPages: 0,
+    finalCrawlStats: null,
+    deepCrawlTab: "",
+    inlinks: [],
+    outlinks: [],
+    robotsBlocked: [],
+    cookies: [],
+    favicon: "",
+    visitedUrls: new Set(),
+    maxUrlsStored: 5000,
+
+    // Original actions (for backward compatibility)
+    ...setters,
+
+    // New action groups
+    actions: {
+      data: {
+        setDomainCrawlData: setters.setDomainCrawlData,
+        addDomainCrawlResult: setters.addDomainCrawlResult,
+        clearDomainCrawlData: setters.clearDomainCrawlData,
+        setIssues: setters.setIssues,
+        setStatusCodes: setters.setStatusCodes,
+        setHeadingsH1: setters.setHeadingsH1,
+        setHeadingsH2: setters.setHeadingsH2,
+        setIssueRow: setters.setIssueRow,
+        setSelectedTableURL: setters.setSelectedTableURL,
+        setJavascript: setters.setJavascript,
+        setCss: setters.setCss,
+        setRobots: setters.setRobots,
+        setSitemaps: setters.setSitemaps,
+        setSummary: setters.setSummary,
+        setIssuesData: setters.setIssuesData,
+        setCrawlSessionTotalArray: setters.setCrawlSessionTotalArray,
+        setInlinks: setters.setInlinks,
+        setOutlinks: setters.setOutlinks,
+        setRobotsBlocked: setters.setRobotsBlocked,
+        setCookies: setters.setCookies,
+        setFavicon: setters.setFavicon,
+        setAggregatedData: setters.setAggregatedData,
+        appendAggregatedData: setters.appendAggregatedData,
+        fetchMaxUrlsStored: setters.fetchMaxUrlsStored,
+        selectURL: async (url: string) => {
+          const state = get();
+          const rows = state.crawlData;
+
+          let pageData = rows.find((item) => item.url === url);
+
+          // Fetch full data from backend because we may only have LightCrawlResult in state
+          // or the data might not be in the state at all (due to JS heap ring buffer).
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            const fullData = await invoke("get_url_data_command", { url });
+            if (fullData) {
+              pageData = fullData;
+            }
+          } catch (error) {
+            console.error("Failed to fetch full URL data:", error);
+          }
+
+          if (!pageData) {
+            console.warn(`Could not find or fetch data for URL: ${url}`);
+            setters.setSelectedTableURL([]);
+            setters.setInlinks([]);
+            setters.setOutlinks([]);
+            return;
+          }
+
+          setters.setSelectedTableURL([pageData]);
+
+          const normalizeUrl = (url: string) => {
+            if (!url) return "";
+            try {
+              let u = url.toString().trim().toLowerCase();
+              u = u.replace(/^(?:https?:\/\/)?/i, "");
+              u = u.replace(/^www\./i, "");
+              const queryIdx = u.indexOf("?");
+              if (queryIdx !== -1) u = u.substring(0, queryIdx);
+              const hashIdx = u.indexOf("#");
+              if (hashIdx !== -1) u = u.substring(0, hashIdx);
+              if (u.endsWith("/")) u = u.slice(0, -1);
+              return u;
+            } catch (e) {
+              return "";
+            }
+          };
+
+          const targetUrlNormalized = normalizeUrl(url);
+
+          // Fetch incoming links — backend returns pre-computed flat [{url, anchor_text, status}],
+          // one entry per source page. No full page objects cross the IPC bridge.
+          let incomingLinks: any[] = [];
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            incomingLinks = (await invoke("get_incoming_links_command", {
+              targetUrl: url,
+            })) || [];
+          } catch (error) {
+            console.error("Failed to fetch incoming links:", error);
+          }
+
+          // data[0] = target page identifier; data[1] = flat source list
+          setters.setInlinks([{ url }, incomingLinks]);
+
+          const allOutgoingLinks = [];
+          if (pageData.inoutlinks_status_codes?.internal) {
+            allOutgoingLinks.push(...pageData.inoutlinks_status_codes.internal);
+          }
+          if (pageData.inoutlinks_status_codes?.external) {
+            allOutgoingLinks.push(...pageData.inoutlinks_status_codes.external);
+          }
+
+          setters.setOutlinks([{ url }, allOutgoingLinks]);
+        },
+      },
+      ui: {
+        setGenericChart: setters.setGenericChart,
+        setIssuesView: setters.setIssuesView,
+        setTableFilter: setters.setTableFilter,
+        setTableUrlFilter: setters.setTableUrlFilter,
+        setDeepCrawlTab: setters.setDeepCrawlTab,
+      },
+      status: {
+        setDomainCrawlLoading: setters.setDomainCrawlLoading,
+        setIsGeneratingExcel: setters.setIsGeneratingExcel,
+        setFinishedDeepCrawl: setters.setFinishedDeepCrawl,
+        setIsExtracting: setters.setIsExtracting,
+        setCrawlerType: setters.setCrawlerType,
+        setIsPaused: setters.setIsPaused,
+        setIsStopped: setters.setIsStopped,
+      },
+      progress: {
+        setTotalUrlsCrawled: setters.setTotalUrlsCrawled,
+        setStreamedCrawledPages: setters.setStreamedCrawledPages,
+        setStreamedTotalPages: setters.setStreamedTotalPages,
+        setFinalCrawlStats: setters.setFinalCrawlStats,
+        updateStreaming: (update: StreamingUpdate) =>
+          set((state) => {
+            let newCrawlData = state.crawlData;
+            let newVisited: Set<string> | undefined;
+
+            if (update.result) {
+              const existingVisited: Set<string> =
+                state.visitedUrls instanceof Set
+                  ? state.visitedUrls
+                  : new Set<string>(
+                      (state.crawlData || []).map((item: any) => item.url),
+                    );
+
+              if (!existingVisited.has(update.result.url)) {
+                existingVisited.add(update.result.url);
+                newVisited = existingVisited;
+
+                const MAX_CRAWL_ROWS = state.maxUrlsStored || 5000;
+                if (newCrawlData.length < MAX_CRAWL_ROWS) {
+                  newCrawlData = state.crawlData.concat([update.result]);
+                }
+              }
+            }
+
+            const versionBumped = newCrawlData !== state.crawlData;
+            return {
+              crawlData: newCrawlData,
+              ...(versionBumped ? { crawlDataVersion: state.crawlDataVersion + 1 } : {}),
+              ...(newVisited ? { visitedUrls: newVisited } : {}),
+              streamedCrawledPages:
+                update.progress?.crawled ?? state.streamedCrawledPages,
+              streamedTotalPages:
+                update.progress?.total ?? state.streamedTotalPages,
+            };
+          }),
+      },
+      robots: {
+        setRobotsBlocked: setters.setRobotsBlocked,
+      },
+    },
+  };
+});
+
+// Memoized selectors
+export const useCrawlData = () => {
+  const selector = useCallback((state: CrawlStore) => state.crawlData, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+// Lightweight version counter — subscribe to this instead of crawlData to
+// avoid holding the full array reference in React's fiber tree.
+export const useCrawlDataVersion = () =>
+  useGlobalCrawlStore((state) => state.crawlDataVersion);
+
+export const useAggregatedData = () => {
+  const selector = useCallback((state: CrawlStore) => state.aggregatedData, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useCrawlLoading = () => {
+  const selector = useCallback(
+    (state: CrawlStore) => state.domainCrawlLoading,
+    [],
+  );
+  return useGlobalCrawlStore(selector);
+};
+
+export const useIsGeneratingExcel = () => {
+  const selector = useCallback(
+    (state: CrawlStore) => state.isGeneratingExcel,
+    [],
+  );
+  return useGlobalCrawlStore(selector);
+};
+
+export const useIssuesView = () => {
+  const selector = useCallback((state: CrawlStore) => state.issuesView, []);
+  return useGlobalCrawlStore(selector);
+};
+
+export const useIssuesData = () => {
+  const selector = useCallback((state: CrawlStore) => state.issuesData, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useSelectedTableURL = () => {
+  const selector = useCallback(
+    (state: CrawlStore) => state.selectedTableURL,
+    [],
+  );
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useInlinks = () => {
+  const selector = useCallback((state: CrawlStore) => state.inlinks, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useOutlinks = () => {
+  const selector = useCallback((state: CrawlStore) => state.outlinks, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useRobotsBlocked = () => {
+  const selector = useCallback((state: CrawlStore) => state.robotsBlocked, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useCookies = () => {
+  const selector = useCallback((state: CrawlStore) => state.cookies, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useFavicon = () => {
+  const selector = useCallback((state: CrawlStore) => state.favicon, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useStreamingProgress = () => {
+  const selector = useCallback(
+    (state: CrawlStore) => ({
+      crawledPages: state.streamedCrawledPages,
+      totalPages: state.streamedTotalPages,
+    }),
+    [],
+  );
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useCrawlSummary = () => {
+  const selector = useCallback((state: CrawlStore) => state.summary, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+export const useFinalCrawlStats = () => {
+  const selector = useCallback((state: CrawlStore) => state.finalCrawlStats, []);
+  return useGlobalCrawlStore(selector, shallow);
+};
+
+// Action hooks
+export const useCrawlActions = () =>
+  useGlobalCrawlStore((state) => state.actions);
+export const useDataActions = () =>
+  useGlobalCrawlStore((state) => state.actions.data);
+export const useUIActions = () =>
+  useGlobalCrawlStore((state) => state.actions.ui);
+export const useStatusActions = () =>
+  useGlobalCrawlStore((state) => state.actions.status);
+export const useProgressActions = () =>
+  useGlobalCrawlStore((state) => state.actions.progress);
+
+// Default export for backward compatibility
+export default useGlobalCrawlStore;

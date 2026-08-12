@@ -1,0 +1,254 @@
+// @ts-nocheck
+import useOnPageSeo from "@/store/storeOnPageSeo";
+import React, { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import useContentStore from "@/store/storeContent";
+import {
+  FiClock,
+  FiType,
+  FiBarChart2,
+  FiSliders,
+  FiBookOpen,
+} from "react-icons/fi";
+import { PiVideo } from "react-icons/pi";
+
+interface ContentSummaryProps {
+  keywords: any[];
+  wordCount: number[];
+  readingTime: number;
+  readingLevelResults: any[];
+  htmlToTextRatio: any[];
+  pageTitle: string[];
+  video: string[];
+  AiContentAnalysis: any;
+  robots: any;
+}
+
+// Icon on the right with its label to the left — the arrangement the rows were
+// flipped to. `gap` rather than space-x-reverse, so the English mode's
+// flex-direction flip in globals.css needs no counterpart here.
+const MetricRow: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+}> = ({ icon, label, value }) => (
+  <div className="flex flex-row-reverse items-center justify-between gap-2">
+    <div className="flex flex-row-reverse items-center gap-2">
+      {icon}
+      <span className="font-semibold">{label}</span>
+    </div>
+    <span className="text-black/70 dark:text-white/70">{value}</span>
+  </div>
+);
+
+const ContentSummary: React.FC<ContentSummaryProps> = ({
+  keywords,
+  wordCount,
+  readingTime,
+  readingLevelResults,
+  htmlToTextRatio,
+  pageTitle,
+  video,
+}) => {
+  const { setSeoContentQuality } = useOnPageSeo();
+  const [aiContentAnalysis, setAiContentAnalysis] = useState("");
+  const [analysisFailed, setAnalysisFailed] = useState(false);
+  const setReadingTime = useContentStore((state) => state.setReadingTime);
+  const setWordCount = useContentStore((state) => state.setWordCount);
+  const setReadingLevel = useContentStore((state) => state.setReadingLevel);
+  const setTextRatio = useContentStore((state) => state.setTextRatio);
+  const setKeywords = useContentStore((state) => state.setKeywords);
+  const setVideo = useContentStore((state) => state.setVideo);
+
+  const [selectedKws, setSelectedKws] = useState<string[]>([]);
+
+  const hasCrawled = keywords && keywords.length > 0;
+  const topKeywords = keywords?.[0] || [];
+
+  const handleSelect = (kw: string) => {
+    const updatedKws = new Set(selectedKws);
+    if (updatedKws.has(kw)) {
+      updatedKws.delete(kw);
+    } else {
+      updatedKws.add(kw);
+    }
+    setSelectedKws(Array.from(updatedKws));
+  };
+
+  useEffect(() => {
+    if (keywords && keywords.length > 0) {
+      setSeoContentQuality({
+        keywords,
+        wordCount,
+        readingTime,
+        readingLevelResults,
+        htmlToTextRatio,
+      });
+    }
+
+    setWordCount(wordCount);
+    setReadingTime(readingTime);
+    setReadingLevel(readingLevelResults);
+    setTextRatio(htmlToTextRatio);
+    setKeywords(keywords);
+    setVideo(video);
+  }, [keywords, readingTime, readingLevelResults, htmlToTextRatio, video]);
+
+  useEffect(() => {
+    setAiContentAnalysis("");
+    setAnalysisFailed(false);
+  }, [keywords]);
+
+  useEffect(() => {
+    if (keywords && keywords.length > 0 && pageTitle && pageTitle.length > 0) {
+      // Add timeout to prevent blocking the crawl process - make AI call optional
+      const timeoutId = setTimeout(async () => {
+        try {
+          // Create a timeout promise
+          const timeoutPromise = new Promise(
+            (_, reject) =>
+              setTimeout(() => reject(new Error("AI request timeout")), 5000), // 5 second timeout
+          );
+
+          // Race between the API call and timeout
+          const result = await Promise.race([
+            invoke<string>("get_genai", { query: pageTitle[0] }),
+            timeoutPromise,
+          ]);
+
+          setAiContentAnalysis(result as string);
+          setAnalysisFailed(false);
+        } catch (error) {
+          console.error("Error from get_genai:", error);
+          setAnalysisFailed(true);
+        }
+      }, 2000); // Delay by 2 seconds to ensure crawl is complete
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keywords, pageTitle]);
+
+  const retryAnalysis = () => {
+    invoke<string>("get_genai", { query: pageTitle[0] })
+      .then((result) => {
+        setAiContentAnalysis(result);
+        setAnalysisFailed(false);
+      })
+      .catch((error) => {
+        console.error("Error from get_genai:", error);
+        setAnalysisFailed(true);
+      });
+  };
+
+  const videoLabel =
+    hasCrawled && video && video[0] === "Yes"
+      ? "ویدیو دارد"
+      : hasCrawled && video && video[0] === "No"
+        ? "بدون ویدیو"
+        : "";
+
+  return (
+    <section className="flex h-full flex-col gap-4 px-3 pb-3 pt-4 dark:bg-slate-900 dark:text-white">
+      <div className="grid gap-3">
+        <MetricRow
+          icon={<FiClock className="text-sky-dark" size={18} />}
+          label="زمان مطالعه"
+          value={wordCount && wordCount[2] ? `${wordCount[2]} دقیقه` : ""}
+        />
+        <MetricRow
+          icon={<FiType className="text-sky-dark" size={18} />}
+          label="تعداد کلمات"
+          value={
+            wordCount && wordCount[0] !== undefined
+              ? `${wordCount[0]} کلمه`
+              : ""
+          }
+        />
+        <MetricRow
+          icon={<FiBarChart2 className="text-sky-dark" size={18} />}
+          label="سطح خوانایی"
+          value={readingLevelResults[0] ? readingLevelResults[0][1] : ""}
+        />
+        <MetricRow
+          icon={<FiSliders className="text-sky-dark" size={18} />}
+          label="نسبت متن"
+          value={
+            htmlToTextRatio && htmlToTextRatio[0]
+              ? `${Math.round(htmlToTextRatio[0][0] * 100)}%`
+              : ""
+          }
+        />
+        <MetricRow
+          icon={<PiVideo className="text-sky-dark" size={20} />}
+          label="رسانه"
+          value={videoLabel}
+        />
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2">
+        <div className="flex flex-row-reverse items-center justify-end gap-2">
+          <FiBookOpen className="text-sky-dark" size={18} />
+          <span className="font-semibold">کلمات کلیدی برتر</span>
+        </div>
+        {/* The resizable pane leaves this panel's height to its content, so the
+            keyword list claims the room the metrics used to leave empty and
+            scrolls once it runs out. */}
+        <div className="flex min-h-[7rem] flex-1 flex-wrap content-start gap-2 overflow-y-auto pb-1">
+          {topKeywords.map((keyword: any, index: number) => (
+            <div
+              onClick={() => handleSelect(keyword[0])}
+              key={index}
+              className={`w-fit cursor-pointer rounded-lg px-1.5 py-1 text-xs ${
+                selectedKws.includes(keyword[0])
+                  ? "bg-brand-bright/20 ring-1 ring-brand-bright"
+                  : "bg-slate-200 dark:bg-gray-700"
+              }`}
+            >
+              <span className="bg-brand-bright px-1 py-[1px] rounded-full text-white text-xs">
+                {keyword[1]}
+              </span>
+              <span className="ml-1">{keyword[0]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Nothing has been analysed before a crawl, so the heading would only be
+          an empty label taking up room the keywords can use. */}
+      {hasCrawled && (
+        <div className="shrink-0 space-y-1 border-t border-black/10 pt-2 dark:border-white/10">
+          {aiContentAnalysis ? (
+            <>
+              <h3 className="text-[10px] font-semibold dark:text-sky-dark">
+                خلاصه صفحه
+              </h3>
+              <p className="text-muted-foreground max-h-24 overflow-y-auto text-xs">
+                {aiContentAnalysis}
+              </p>
+            </>
+          ) : analysisFailed ? (
+            <div className="space-y-1 text-black/50 dark:text-white/50">
+              <p>تحلیل هوش مصنوعی در دسترس نیست</p>
+              <button
+                onClick={retryAnalysis}
+                className="rounded bg-blue-500 px-2 py-1 text-xs text-white transition-colors hover:bg-blue-600"
+              >
+                تلاش دوباره
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1 text-black/50 dark:text-white/50">
+              <p>مدل هوش مصنوعی در دسترس نیست</p>
+              <p>
+                برو به <kbd>منو</kbd> &gt; <kbd>اتصال‌ها</kbd>
+              </p>
+              <p>سپس مدل هوش مصنوعی خود را انتخاب کنید</p>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+};
+
+export default ContentSummary;

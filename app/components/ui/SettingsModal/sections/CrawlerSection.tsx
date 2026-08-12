@@ -1,0 +1,200 @@
+// @ts-nocheck
+"use client";
+
+import React from "react";
+import { AppSettings } from "../useSettings";
+import {
+  SettingField,
+  NumberInput,
+  ToggleSwitch,
+  SectionHeader,
+} from "../fields/SettingFields";
+import { Gauge, Layers, ArrowDownUp, TrendingUp, Copy, Code } from "lucide-react";
+
+interface Props {
+  settings: AppSettings;
+  onUpdate: (key: string, value: any) => void;
+}
+
+const CrawlerSection = ({ settings, onUpdate }: Props) => (
+  <div className="space-y-0.5">
+    <SectionHeader title="عمومی" icon={<Gauge className="w-3.5 h-3.5" />} />
+    <SettingField
+      label="درخواست‌های همزمان"
+      description="Simultaneous HTTP connections"
+    >
+      <NumberInput
+        value={settings.concurrent_requests}
+        onChange={(v) => onUpdate("concurrent_requests", v)}
+        min={1}
+      />
+    </SettingField>
+
+    <SettingField label="اندازه دسته" description="URLs processed per cycle">
+      <NumberInput
+        value={settings.batch_size}
+        onChange={(v) => onUpdate("batch_size", v)}
+        min={1}
+      />
+    </SettingField>
+
+    <SettingField
+      label="حداکثر عمق کراول"
+      description="How deep to follow links"
+    >
+      <NumberInput
+        value={settings.max_depth}
+        onChange={(v) => onUpdate("max_depth", v)}
+        min={1}
+      />
+    </SettingField>
+
+    <SettingField
+      label="حداکثر URL برای هر دامنه"
+      description="URL limit per domain"
+    >
+      <NumberInput
+        value={settings.max_urls_per_domain}
+        onChange={(v) => onUpdate("max_urls_per_domain", v)}
+        min={1}
+      />
+    </SettingField>
+
+    <SettingField
+      label="حداکثر ردیف زنده در رابط کاربری"
+      description="Max URLs to keep in active memory"
+    >
+      <NumberInput
+        value={settings.max_urls_stored}
+        onChange={(v) => onUpdate("max_urls_stored", v)}
+        min={1}
+      />
+    </SettingField>
+
+    <SectionHeader
+      title="زمان‌بندی و محدودسازی نرخ"
+      icon={<TrendingUp className="w-3.5 h-3.5" />}
+    />
+
+    <SettingField
+      label="کراول تطبیقی"
+      description="Auto-adjust speed based on server"
+    >
+      <ToggleSwitch
+        checked={settings.adaptive_crawling}
+        onChange={(v) => onUpdate("adaptive_crawling", v)}
+      />
+    </SettingField>
+
+    <SettingField label="تأخیر پایه" description="Delay between requests">
+      <NumberInput
+        value={settings.base_delay}
+        onChange={(v) => onUpdate("base_delay", v)}
+        min={0}
+        unit="ms"
+      />
+    </SettingField>
+
+    <SettingField label="حداکثر تأخیر" description="Maximum adaptive delay">
+      <NumberInput
+        value={settings.max_delay}
+        onChange={(v) => onUpdate("max_delay", v)}
+        min={100}
+        unit="ms"
+      />
+    </SettingField>
+
+    <SettingField
+      label="حداقل تأخیر کراول"
+      description="Floor delay in adaptive mode"
+    >
+      <NumberInput
+        value={settings.min_crawl_delay}
+        onChange={(v) => onUpdate("min_crawl_delay", v)}
+        min={0}
+        unit="ms"
+      />
+    </SettingField>
+
+    <SettingField label="Timeout کراول" description="Total crawl job timeout">
+      <NumberInput
+        value={settings.crawl_timeout}
+        onChange={(v) => onUpdate("crawl_timeout", v)}
+        min={60}
+        unit="s"
+      />
+    </SettingField>
+
+    <SettingField
+      label="بازه بررسی توقف"
+      description="How often to check for stalls"
+    >
+      <NumberInput
+        value={settings.stall_check_interval}
+        onChange={(v) => onUpdate("stall_check_interval", v)}
+        min={5}
+        unit="s"
+      />
+    </SettingField>
+
+    <SettingField
+      label="حداکثر زمان انتظار"
+      description="Stall threshold per URL"
+    >
+      <NumberInput
+        value={settings.max_pending_time}
+        onChange={(v) => onUpdate("max_pending_time", v)}
+        min={30}
+        unit="s"
+      />
+    </SettingField>
+
+    <SectionHeader
+      title="تحلیل کراول"
+      icon={<Copy className="w-3.5 h-3.5" />}
+    />
+
+    <SettingField
+      label="بررسی محتوای تکراری"
+      description="Detect similar/identical pages during crawl. Adds per-page processing time."
+    >
+      <ToggleSwitch
+        checked={settings.duplicate_content_check_enabled}
+        onChange={(v) => onUpdate("duplicate_content_check_enabled", v)}
+      />
+    </SettingField>
+
+    <SectionHeader title="JavaScript" icon={<Code className="w-3.5 h-3.5" />} />
+
+    <SettingField label="انتظار HTML" description="Expect HTML content type">
+      <ToggleSwitch
+        checked={settings.html}
+        onChange={(v) => onUpdate("html", v)}
+      />
+    </SettingField>
+
+    <SettingField
+      label="رندر JS"
+      description="Use headless Chrome for JS pages"
+    >
+      <ToggleSwitch
+        checked={settings.javascript_rendering}
+        onChange={(v) => onUpdate("javascript_rendering", v)}
+      />
+    </SettingField>
+
+    <SettingField
+      label="همزمانی JS"
+      description="Headless Chrome concurrency"
+    >
+      <NumberInput
+        value={settings.javascript_concurrency}
+        onChange={(v) => onUpdate("javascript_concurrency", v)}
+        min={1}
+        max={20}
+      />
+    </SettingField>
+  </div>
+);
+
+export default CrawlerSection;

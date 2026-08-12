@@ -1,0 +1,144 @@
+// @ts-nocheck
+"use client";
+
+import React from "react";
+import { AppSettings } from "../useSettings";
+import {
+    SettingField,
+    NumberInput,
+    ToggleSwitch,
+    SectionHeader,
+} from "../fields/SettingFields";
+import { Link2, Zap, TrendingUp } from "lucide-react";
+
+interface Props {
+    settings: AppSettings;
+    onUpdate: (key: string, value: any) => void;
+}
+
+const LinksSection = ({ settings, onUpdate }: Props) => (
+    <div className="space-y-0.5">
+        <SectionHeader
+            title="پردازشگر لینک"
+            icon={<Link2 className="w-3.5 h-3.5" />}
+        />
+
+        <SettingField
+            label="حداکثر بررسی‌های همزمان"
+            description="Parallel link status checks"
+        >
+            <NumberInput
+                value={settings.links_max_concurrent_requests}
+                onChange={(v) => onUpdate("links_max_concurrent_requests", v)}
+                min={1}
+                max={50}
+            />
+        </SettingField>
+
+        <SettingField
+            label="ظرفیت اولیه وظایف"
+            description="Pre-allocated task slots"
+        >
+            <NumberInput
+                value={settings.links_initial_task_capacity}
+                onChange={(v) => onUpdate("links_initial_task_capacity", v)}
+                min={10}
+                max={1000}
+            />
+        </SettingField>
+
+        <SettingField
+            label="حداکثر تلاش مجدد"
+            description="Retry attempts for link checks"
+        >
+            <NumberInput
+                value={settings.links_max_retries}
+                onChange={(v) => onUpdate("links_max_retries", v)}
+                min={0}
+                max={10}
+            />
+        </SettingField>
+
+        <SettingField
+            label="تأخیر تلاش مجدد"
+            description="Delay between retries"
+        >
+            <NumberInput
+                value={settings.links_retry_delay}
+                onChange={(v) => onUpdate("links_retry_delay", v)}
+                min={0}
+                max={30000}
+                unit="ms"
+            />
+        </SettingField>
+
+        <SettingField
+            label="Timeout درخواست"
+            description="Per-link request timeout"
+        >
+            <NumberInput
+                value={settings.links_request_timeout}
+                onChange={(v) => onUpdate("links_request_timeout", v)}
+                min={1}
+                max={120}
+                unit="s"
+            />
+        </SettingField>
+
+        <SettingField
+            label="ضریب Jitter"
+            description="Randomized delay factor (0.0-1.0)"
+        >
+            <NumberInput
+                value={settings.links_jitter_factor}
+                onChange={(v) => onUpdate("links_jitter_factor", v)}
+                min={0}
+                max={1}
+                step={0.05}
+                width="w-[80px]"
+            />
+        </SettingField>
+
+        <SettingField
+            label="Timeout بی‌کاری pool"
+            description="Connection pool idle timeout"
+        >
+            <NumberInput
+                value={settings.links_pool_idle_timeout}
+                onChange={(v) => onUpdate("links_pool_idle_timeout", v)}
+                min={5}
+                max={300}
+                unit="s"
+            />
+        </SettingField>
+
+        <SettingField
+            label="حداکثر اتصال بی‌کار برای هر host"
+            description="Max idle connections per host"
+        >
+            <NumberInput
+                value={settings.links_max_idle_per_host}
+                onChange={(v) => onUpdate("links_max_idle_per_host", v)}
+                min={1}
+                max={50}
+            />
+        </SettingField>
+
+        <SectionHeader
+            title="تحلیل کراول"
+            icon={<TrendingUp className="w-3.5 h-3.5" />}
+        />
+
+        <SettingField
+            label="امتیاز لینک"
+            description="Compute internal PageRank-style authority score (1-100) at the end of every crawl"
+        >
+            <ToggleSwitch
+                checked={settings.link_score_enabled}
+                onChange={(v) => onUpdate("link_score_enabled", v)}
+            />
+        </SettingField>
+    </div>
+);
+
+export default LinksSection;

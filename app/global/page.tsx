@@ -1,0 +1,565 @@
+// @ts-nocheck
+"use client";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Tabs } from "@mantine/core";
+import { FaGlobe, FaTasks, FaChartBar } from "react-icons/fa";
+import { RiFireLine } from "react-icons/ri";
+import { IoKeyOutline } from "react-icons/io5";
+import { SlSocialGoogle } from "react-icons/sl";
+import { GrPlan } from "react-icons/gr";
+import { debounce } from "lodash";
+import useLoaderStore from "@/store/loadersStore";
+import InputZone from "./_components/InputZone";
+import useGlobalCrawlStore from "@/store/GlobalCrawlDataStore";
+import SidebarContainer from "./_components/Sidebar/SidebarContainer";
+import { useVisibilityStore } from "@/store/VisibilityStore";
+import TaskManagerContainer from "../components/ui/TaskManager/TaskManagerContainer";
+import TablesContainer from "./_components/TablesContainer/TablesContainer";
+import { listen } from "@tauri-apps/api/event";
+import Analytics from "../components/ui/Analytics/Analytics";
+import ClarityContainer from "../components/ui/MSClarityModal/ClarityContainer";
+import KeywordAnalytics from "../components/ui/KwTracking/KeywordAnalytics";
+import GSCcontainer from "../components/ui/GSCcontainer/GSCcontainer";
+import ContentPlannerContainer from "../components/ui/ContentPlanner/ContentPlannerContainer";
+import useGlobalConsoleStore from "@/store/GlobalConsoleLog";
+// The old GeneralSettings screen was a 927-line static mockup — every control
+// was decorative, with no handler and no call to the backend, so it advertised
+// configuration that silently did nothing. CrawlConfig is the real one: it
+// reads via get_settings_command and writes via update_settings_command.
+import CrawlConfig from "../components/ui/SettingsModal/CrawlConfig/CrawlConfig";
+import { PiShuffleAngularLight } from "react-icons/pi";
+import { LuMicroscope } from "react-icons/lu";
+import { useDiffStore } from "@/store/DiffStore";
+import DashboardSEO from "./_components/SEODashboard/DashboardSEO";
+import Duplicates from "./_components/Duplicates/Duplicates";
+import { TbDashboard } from "react-icons/tb";
+import { MdControlPointDuplicate, MdOutlineDashboard } from "react-icons/md";
+// import KeywordTrackingDeepCrawlContainer from "./_components/KeywordTracking/KeywordTrackingDeepCrawlContainer";
+
+interface CrawlResult {
+  url: string;
+  title: string;
+  h1: string;
+  file_type: string;
+}
+
+export default function Page() {
+  const [data, setData] = useState<CrawlResult | null>(null);
+  const [search, setSearch] = useState("");
+  const [activeTab, setActiveTab] = useState("first");
+
+  const { loaders, showLoader, hideLoader } = useLoaderStore();
+  const setDomainCrawlLoading = useGlobalCrawlStore(
+    (state) => state.setDomainCrawlLoading,
+  );
+  const clearDomainCrawlData = useGlobalCrawlStore(
+    (state) => state.clearDomainCrawlData,
+  );
+  const addDomainCrawlResult = useGlobalCrawlStore(
+    (state) => state.addDomainCrawlResult,
+  );
+  const setSelectedTableURL = useGlobalCrawlStore(
+    (state) => state.setSelectedTableURL,
+  );
+  const setIssuesData = useGlobalCrawlStore((state) => state.setIssuesData);
+  const setFinishedDeepCrawl = useGlobalCrawlStore(
+    (state) => state.setFinishedDeepCrawl,
+  );
+  const setCrawlSessionTotalArray = useGlobalCrawlStore(
+    (state) => state.setCrawlSessionTotalArray,
+  );
+  const setRobotsBlocked = useGlobalCrawlStore(
+    (state) => state.setRobotsBlocked,
+  );
+  const setFavicon = useGlobalCrawlStore((state) => state.setFavicon);
+  const setIsPaused = useGlobalCrawlStore((state) => state.setIsPaused);
+  const setIsStopped = useGlobalCrawlStore((state) => state.setIsStopped);
+  const { setIsGlobalCrawling, setIsFinishedDeepCrawl } =
+    useGlobalConsoleStore();
+  const { visibility, showSidebar, hideSidebar } = useVisibilityStore();
+  const { setBulkDiffData } = useDiffStore();
+  const fetchMaxUrlsStored = useGlobalCrawlStore(
+    (state) => state.actions.data.fetchMaxUrlsStored,
+  );
+
+  //POWERBI
+  const [powerBiUrl, setPowerBiUrl] = useState("");
+  const [error, setError] = useState("");
+
+  // Debounced search handler
+  const handleSearchChange = useCallback(
+    debounce((event: React.ChangeEvent<HTMLInputElement>) => {
+      setSearch(event.target.value.toLowerCase());
+    }, 300),
+    [],
+  );
+
+  // Cleanup debounce on unmount
+  useEffect(() => {
+    return () => handleSearchChange.cancel();
+  }, [handleSearchChange]);
+
+  // Handle domain crawl
+  const handleDomainCrawl = async (url: string) => {
+    try {
+      if (sessionStorage.getItem("crawlNumber")) {
+        sessionStorage.setItem(
+          "crawlNumber",
+          Number(sessionStorage.getItem("crawlNumber")) + 1,
+        );
+      } else {
+        sessionStorage.setItem("crawlNumber", "1");
+      }
+
+      setSelectedTableURL([]);
+      setDomainCrawlLoading(true);
+      setIssuesData([]);
+      clearDomainCrawlData();
+      setRobotsBlocked([]);
+      setFavicon("");
+      setIsGlobalCrawling(true);
+      setFinishedDeepCrawl(false);
+      setIsFinishedDeepCrawl(false);
+      setIsPaused(false);
+      setIsStopped(false);
+
+      await fetchMaxUrlsStored();
+
+      const result = await invoke("domain_crawl_command", { domain: url });
+      // console.log("%cCrawl Result:", "color: red;", result);
+    } catch (error) {
+      console.error("Failed to execute domain crawl command:", error);
+    } finally {
+      setDomainCrawlLoading(false);
+      setIsFinishedDeepCrawl(true);
+      setIsGlobalCrawling(false);
+
+      // Add URL to the Localstorage history URLs
+      const storedUrls = localStorage.getItem("searchHistory");
+      const urls = JSON.parse(storedUrls || "[]");
+
+      if (urls.length >= 10) {
+        urls.shift();
+      }
+
+      if (urls.includes(url)) {
+        return;
+      }
+
+      urls.push(url);
+      localStorage.setItem("searchHistory", JSON.stringify(urls));
+
+      // Get the differences between crawls
+      const diff = await invoke("get_url_diff_command");
+      setBulkDiffData(diff);
+
+      const crawledLinks =
+        JSON.parse(sessionStorage.getItem("CrawledLinks")) || [];
+      const currentCrawlData = useGlobalCrawlStore.getState().crawlData;
+      if (currentCrawlData?.length) {
+        crawledLinks.push(currentCrawlData.length);
+        setCrawlSessionTotalArray(crawledLinks);
+      } else {
+        crawledLinks.push(0);
+        setCrawlSessionTotalArray(crawledLinks);
+      }
+      sessionStorage.setItem("CrawledLinks", JSON.stringify(crawledLinks));
+    }
+  };
+
+  // Event listener for crawl results
+  useEffect(() => {
+    console.log("Initializing crawl event listeners...");
+
+    const buffer = {
+      results: [] as any[],
+      timer: null as any,
+    };
+
+    const flushBuffer = () => {
+      if (buffer.results.length > 0) {
+        // Flush the entire buffer in a single call.
+        // addDomainCrawlResult already caps at maxUrlsStored internally and filters
+        // duplicates, so chunking into multiple calls just causes N extra Zustand
+        // state updates and N extra React re-renders per flush cycle.
+        const toFlush = buffer.results.splice(0);
+        // Use startTransition so the update is treated as non-urgent by React —
+        // it yields to input events and prevents the UI from freezing.
+        React.startTransition(() => {
+          addDomainCrawlResult(toFlush);
+        });
+      }
+      buffer.timer = null;
+    };
+
+    let unlistenResult: (() => void) | null = null;
+    let unlistenComplete: (() => void) | null = null;
+    let unlistenBlocked: (() => void) | null = null;
+    let unlistenFavicon: (() => void) | null = null;
+
+    listen("crawl_result", (event) => {
+      // Drop incoming events once the JS heap cap is reached. The Rust side
+      // already stops sending after max_urls_stored, but guard here too so
+      // any edge-case IPC messages don't cause unnecessary processing.
+      const { crawlData, maxUrlsStored } = useGlobalCrawlStore.getState();
+      if (crawlData.length >= (maxUrlsStored || 5000)) return;
+
+      // The payload structure is now { results: LightCrawlResult[] } (batched)
+      const payload: any = event.payload;
+
+      if (payload && typeof payload === "object") {
+        const results = payload.results;
+
+        if (Array.isArray(results) && results.length > 0) {
+          buffer.results.push(...results);
+        } else if (payload.result && typeof payload.result === "object") {
+          buffer.results.push(payload.result);
+        }
+
+        // Throttle updates to Zustand to prevent memory thrashing.
+        // 2500ms gives the backend time to accumulate a meaningful batch before
+        // triggering a React re-render, which is especially important at 40K+ URLs.
+        if (!buffer.timer) {
+          buffer.timer = setTimeout(flushBuffer, 2500);
+        }
+      }
+    }).then((unlisten) => {
+      unlistenResult = unlisten;
+    });
+
+    listen("crawl_complete", (event) => {
+      console.log("🏁 Crawl complete event received!");
+      console.log("🏁 Crawl complete payload:", event.payload);
+
+      // Flush any remaining items immediately
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+      }
+      flushBuffer();
+
+      // @ts-ignore
+      if (event.payload && event.payload.robots_blocked) {
+        // @ts-ignore
+        setRobotsBlocked(event.payload.robots_blocked);
+      }
+
+      setFinishedDeepCrawl(true);
+      setIsFinishedDeepCrawl(true);
+
+      // If "Link Score" is enabled in Settings, the backend computes and persists it
+      // as part of finishing this crawl (before this event fires). Pull the persisted
+      // scores into the live tables so they show up without a manual refresh.
+      (async () => {
+        try {
+          const scores: Record<string, number> =
+            (await invoke("get_link_scores_command")) || {};
+          if (Object.keys(scores).length === 0) return;
+
+          const store = useGlobalCrawlStore.getState();
+          const updatedCrawlData = (store.crawlData || []).map((row: any) =>
+            row?.url && scores[row.url] !== undefined
+              ? { ...row, link_score: scores[row.url] }
+              : row,
+          );
+          useGlobalCrawlStore.setState({
+            crawlData: updatedCrawlData,
+            crawlDataVersion: store.crawlDataVersion + 1,
+          });
+
+          const [internalLinks, externalLinks] = await Promise.all([
+            invoke("get_links_page_command", {
+              dataType: "internal_links",
+              limit: 0,
+              offset: 0,
+            }),
+            invoke("get_links_page_command", {
+              dataType: "external_links",
+              limit: 0,
+              offset: 0,
+            }),
+          ]);
+          store.setAggregatedData({
+            internalLinks: (internalLinks as any[]) || [],
+            externalLinks: (externalLinks as any[]) || [],
+          });
+        } catch (error) {
+          console.error("Failed to refresh link scores:", error);
+        }
+      })();
+
+      // Single canonical source of truth for "pages crawled" and friends —
+      // read straight from SQLite once the crawl is done, and hand it to every
+      // widget that shows these numbers (Summary, Overview, Footer) so they
+      // can't independently derive conflicting figures anymore.
+      (async () => {
+        try {
+          const stats = await invoke("get_crawl_summary_stats_command");
+          if (stats && typeof stats.pages === "number") {
+            useGlobalCrawlStore.getState().setFinalCrawlStats(stats);
+          }
+        } catch (error) {
+          console.error("Failed to fetch final crawl stats:", error);
+        }
+      })();
+
+      // Update session storage for totals
+      const totalUrlsCrawled = event.payload?.crawled_urls || 0;
+      const crawledLinks = JSON.parse(
+        sessionStorage.getItem("CrawledLinks") || "[]",
+      );
+      crawledLinks.push(totalUrlsCrawled);
+      setCrawlSessionTotalArray(crawledLinks);
+      sessionStorage.setItem("CrawledLinks", JSON.stringify(crawledLinks));
+    }).then((unlisten) => {
+      unlistenComplete = unlisten;
+    });
+
+    listen("robots_blocked", (event) => {
+      // Flush before setting other status
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+      }
+      flushBuffer();
+
+      console.log("🚫 Robot Blocked URLs received:", event.payload);
+      if (Array.isArray(event.payload)) {
+        // @ts-ignore
+        setRobotsBlocked(event.payload);
+      }
+    }).then((unlisten) => {
+      unlistenBlocked = unlisten;
+    });
+
+    listen("favicon", (event) => {
+      // @ts-ignore
+      const [domain, url] = event.payload;
+      console.log("🎨 Favicon received:", domain, url);
+      setFavicon(url);
+    }).then((unlisten) => {
+      unlistenFavicon = unlisten;
+    });
+
+    return () => {
+      if (unlistenResult) unlistenResult();
+      if (unlistenComplete) unlistenComplete();
+      if (unlistenBlocked) unlistenBlocked();
+      if (unlistenFavicon) unlistenFavicon();
+      if (buffer.timer) clearTimeout(buffer.timer);
+    };
+  }, [
+    addDomainCrawlResult,
+    setFinishedDeepCrawl,
+    setIsFinishedDeepCrawl,
+    setCrawlSessionTotalArray,
+    setRobotsBlocked,
+    setFavicon,
+  ]);
+
+  // TODO: Keep an eye on the crawl size and warn the user if it is too big
+  const crawlDataLength = useGlobalCrawlStore.getState().crawlData.length;
+
+  // POWERBI eMBED HANDLING FROM LOCALSTORAGE
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedUrl = localStorage.getItem("powerBiUrl");
+      if (savedUrl) {
+        setPowerBiUrl(savedUrl);
+      }
+    }
+  }, []);
+
+  // CHECK WHAT IS THE STATUS OF THE PAGESPEED DETAILS - API KEY and TRUE or FALSE to show on the front end.
+  useEffect(() => {
+    const check_psi_status = async () => {
+      try {
+        const psiDetails = await invoke("check_page_speed_bulk");
+        localStorage.setItem("PSIdetails", JSON.stringify(psiDetails));
+      } catch (error) {
+        console.error("Error checking PageSpeed Insights status:", error);
+      }
+    };
+
+    check_psi_status();
+  }, []);
+
+  return (
+    <main className="flex h-full w-full">
+      <InputZone handleDomainCrawl={handleDomainCrawl} />
+      <section className="w-full min-w-0 border-none h-full dark:bg-brand-dark shadow-none rounded-md">
+        <div className="hidden">
+          <input
+            type="text"
+            placeholder="جستجو..."
+            value={search}
+            onChange={handleSearchChange}
+            className="mb-4 p-2 border rounded text-xs"
+          />
+        </div>
+
+        <Tabs value={activeTab} onChange={setActiveTab}>
+          <aside className="absolute top-13 pt-1 left-0 w-full dark:bg-brand-darker z-[200] bg-white">
+            <Tabs.List
+              justify="center"
+              className="dark:text-white text-xs border-b dark:border-b-brand-dark h-7"
+            >
+              <Tabs.Tab value="first">
+                <FaGlobe className="inline-block mr-2" />
+                کراول عمیق
+              </Tabs.Tab>
+
+              <Tabs.Tab value="duplicates">
+                <MdControlPointDuplicate className="inline-block mr-2" />
+                موارد تکراری
+              </Tabs.Tab>
+
+              <Tabs.Tab value="tasks">
+                <FaTasks className="inline-block mr-1 text-sm mb-[2px]" /> مدیریت وظایف
+              </Tabs.Tab>
+              <Tabs.Tab value="analytics">
+                <FaChartBar className="inline-block mr-2" />
+                GA4
+              </Tabs.Tab>
+              <Tabs.Tab value="clarity">
+                <RiFireLine className="inline-block mr-2 mb-[2px] text-sm" />
+                Clarity
+              </Tabs.Tab>
+              {powerBiUrl && (
+                <Tabs.Tab value="powerbi">
+                  <LuMicroscope className="inline-block mr-2 mb-[2px] text-sm" />
+                  Power BI
+                </Tabs.Tab>
+              )}
+              <Tabs.Tab value="gsc">
+                <SlSocialGoogle className="inline-block mr-2 mb-[2px] text-sm" />
+                Search Console
+              </Tabs.Tab>
+              <Tabs.Tab value="kws">
+                <IoKeyOutline className="inline-block mr-2 mb-[2px] text-sm" />
+                رهگیری
+              </Tabs.Tab>
+              <Tabs.Tab value="content">
+                <GrPlan className="inline-block mr-2 mb-[2px] text-sm" />
+                برنامه‌ریز
+              </Tabs.Tab>
+
+              <Tabs.Tab value="dashboard">
+                <MdOutlineDashboard className="inline-block mr-2" />
+                داشبورد
+              </Tabs.Tab>
+            </Tabs.List>
+          </aside>
+
+          {activeTab === "first" && (
+            <Tabs.Panel
+              value="first"
+              className="flex flex-col h-screen bg-white dark:bg-brand-darker overflow-hidden"
+            >
+              <TablesContainer />
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "tasks" && (
+            <Tabs.Panel
+              value="tasks"
+              className="flex flex-col space-y-8 overflow-scroll"
+            >
+              <section className="mt-[3rem]">
+                <TaskManagerContainer />
+              </section>
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "analytics" && (
+            <Tabs.Panel
+              value="analytics"
+              className="pt-8 dark:bg-brand-darker mb-0 h-[calc(100vh-7rem)]"
+            >
+              <Analytics />
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "clarity" && (
+            <Tabs.Panel value="clarity" className="py-8  dark:bg-brand-darker">
+              <section className="h-[calc(100vh-9vh)]  ">
+                <ClarityContainer />
+              </section>
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "powerbi" && (
+            <Tabs.Panel
+              value="powerbi"
+              className="w-full  flex-none  overflow-auto  flex justify-center items-center  bg-white "
+            >
+              <div className="flex justify-center items-center w-full h-screen overflow-auto">
+                {powerBiUrl ? (
+                  <div className="relative w-full h-[calc(100vh-7.9rem)] -mt-20 mb-1  max-w-full max-h-full aspect-[32/15]">
+                    <iframe
+                      className="absolute top-0 left-0 w-full h-full border-0"
+                      src={powerBiUrl}
+                      frameBorder="0"
+                      allowFullScreen={true}
+                      title="گزارش Power BI"
+                    ></iframe>
+                  </div>
+                ) : null}
+              </div>
+            </Tabs.Panel>
+          )}
+
+          <Tabs.Panel
+            value="kws"
+            className="h-[calc(100vh-7rem)] pt-9 dark:bg-brand-darker overflow-hidden"
+          >
+            <KeywordAnalytics />
+          </Tabs.Panel>
+
+          {activeTab === "gsc" && (
+            <Tabs.Panel
+              value="gsc"
+              className="h-calc(100vh-8.8rem)] pt-9 dark:bg-brand-darker"
+            >
+              <GSCcontainer />
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "content" && (
+            <Tabs.Panel
+              value="content"
+              className="pt-6 h-[calc(100vh-3rem)] overflow-auto "
+            >
+              <ContentPlannerContainer />
+            </Tabs.Panel>
+          )}
+
+          {activeTab === "settings" && (
+            <Tabs.Panel value="settings">
+              <CrawlConfig />
+            </Tabs.Panel>
+          )}
+
+          <Tabs.Panel
+            value="dashboard"
+            className="h-[calc(100vh-7rem)] pt-9 dark:bg-brand-darker overflow-hidden"
+          >
+            <DashboardSEO />
+          </Tabs.Panel>
+
+          <Tabs.Panel
+            value="duplicates"
+            className="h-[calc(100vh-7rem)] pt-9 dark:bg-brand-darker overflow-hidden"
+          >
+            <Duplicates />
+          </Tabs.Panel>
+        </Tabs>
+      </section>
+
+      <aside
+        className={`${visibility.sidebar ? "  max-w-[26rem] w-[26rem] flex-grow " : "w-0"} h-screen transition-all duration-300`}
+      >
+        <SidebarContainer />
+      </aside>
+    </main>
+  );
+}

@@ -1,0 +1,237 @@
+// @ts-nocheck
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { KeyRound, Menu, Plus, Settings } from "lucide-react";
+import { FileUpload } from "./FileUpload";
+import { useEffect, useState } from "react";
+import TaxonomyManager from "./TaxonomyManager";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import IPManager from "./IPManager";
+import DomainManager from "./DomainManager";
+import LogsDBManager from "./LogsDBManager";
+import { invoke } from "@tauri-apps/api/core";
+import { useServerLogsStore } from "@/store/ServerLogsGlobalStore";
+import { IoReload, IoTrashBin } from "react-icons/io5";
+import { toast } from "sonner";
+import { Tooltip } from "react-tooltip";
+import { useLogAnalysisStore } from "@/store/ServerLogsStore";
+import { FaRegTrashCan } from "react-icons/fa6";
+import ProjectsDBManager from "./LogsDBprojectsManager";
+import GSCuploadManager from "./GSCuploadManager";
+import { SiGooglesearchconsole } from "react-icons/si";
+import GSCcontainer from "@/app/components/ui/GSCcontainer/GSCcontainer";
+import { FaDownload } from "react-icons/fa";
+import { save } from "@tauri-apps/plugin-dialog";
+import CrawlUploadManager from "./CrawlUploadManager";
+
+function UploadButton() {
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [gscOpen, setGscOpen] = useState(false);
+  const [logsFromDB, setLogsFromDB] = useState(false);
+  const { setStoredLogsFromDBStore } = useServerLogsStore();
+  const resetAll = useLogAnalysisStore((state) => state.resetAll);
+  const { setServerLogsStore, setUploadedLogFiles, reset } =
+    useServerLogsStore();
+
+  const handleClearStoreLogs = async () => {
+    try {
+      await invoke("clear_active_db_command");
+      resetAll();
+      setLogsFromDB([]);
+      setStoredLogsFromDBStore([]);
+      reset();
+      toast.success(
+        "همه لاگ‌های قبلی از cache و دیتابیس حذف شدند",
+      );
+    } catch (error) {
+      console.error("Failed to clear database:", error);
+      toast.error("پاک کردن لاگ‌های دیتابیس ناموفق بود");
+    }
+  };
+
+  return (
+    <div className="flex space-x-1.5 absolute left-1/2 -translate-x-1/2 top-2 z-50 items-center">
+      {/* Upload Logs Button */}
+      <>
+        <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+          <DialogTrigger asChild>
+            <button
+              data-tooltip-id="upload-tooltip"
+              className="bg-brand-bright rounded-l-2xl text-xs w-32 h-7 text-white flex justify-center items-center hover:bg-brand-bright/90 transition-colors active:scale-95"
+            >
+              <Plus size={18} className="text-xs mr-1 dark:text-white" />
+              بارگذاری لاگ‌ها
+            </button>
+          </DialogTrigger>
+          <DialogContent className="p-8 dark:bg-brand-darker dark:border-brand-bright">
+            <FileUpload closeDialog={() => setUploadOpen(false)} />
+          </DialogContent>
+        </Dialog>
+
+        {/* Tooltip must be outside Dialog component */}
+        <Tooltip
+          id="upload-tooltip"
+          place="top"
+          content="Upload or append logs"
+          className="!bg-gray-800 !text-xs"
+        />
+      </>
+
+      {/* DOWNLOAD DATA BUTTON */}
+      <button
+        onClick={async () => {
+          try {
+            const { ExcelLoaded } = useServerLogsStore.getState();
+
+            // 1. Show save dialog to get file path
+            const filePath = await save({
+              defaultPath: `Onwebs SEO & GEO_ServerLogs_Report_${new Date().toISOString().slice(0, 10)}.xlsx`,
+              filters: [{ name: "Excel", extensions: ["xlsx"] }],
+            });
+
+            if (!filePath) return;
+
+            toast.loading("در حال ساخت گزارش کامل Excel...", {
+              id: "excel-export",
+            });
+
+            // 2. Call the backend to export ALL data with trends
+            const totalExported = await invoke(
+              "export_server_logs_trends_excel",
+              {
+                filePath,
+                includeGsc: ExcelLoaded,
+              },
+            );
+
+            toast.success("گزارش روند با موفقیت خروجی گرفته شد!", {
+              id: "excel-export",
+            });
+          } catch (error) {
+            console.error("Export failed:", error);
+            toast.error(`Export failed: ${error}`, { id: "excel-export" });
+          }
+        }}
+        data-tooltip-id="download-tooltip"
+        className="bg-orange-500 text-xs h-7 w-7  text-white flex justify-center items-center hover:bg-orange-600  active:scale-95"
+      >
+        <FaDownload size={14} className="text-xs  dark:text-white" />
+      </button>
+      <Tooltip
+        id="download-tooltip"
+        place="top"
+        content="Download metrics"
+        className="!bg-gray-800 !text-xs"
+      />
+
+      {/* Google Search console button */}
+
+      <Tooltip
+        id="gsc-tooltip"
+        place="top"
+        content="View Google Search Console data"
+        className="!bg-gray-800 !text-xs"
+      />
+      <Dialog className="w-[1200px]" open={gscOpen} onOpenChange={setGscOpen}>
+        <DialogTrigger asChild>
+          <aside
+            data-tooltip-id="gsc-tooltip"
+            className="bg-stone-500 text-xs rounded-sm cursor-pointer"
+          >
+            <KeyRound className="w-7 h-7 text-white p-1.5" />
+          </aside>
+        </DialogTrigger>
+        <DialogContent className="px-4 py-5 overflow-hidden pl-6 w-[1900px] max-w-[90vw] h-[100%-10%]  dark:bg-brand-darker">
+          <GSCcontainer />
+        </DialogContent>
+      </Dialog>
+
+      {/* Settings Button */}
+      <>
+        <Tooltip id="settings-tooltip" place="top" content="Settings" />
+        <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+          <DialogTrigger asChild>
+            <button
+              data-tooltip-id="settings-tooltip"
+              className="bg-gray-200 dark:bg-gray-700 text-xs w-7  h-7 rounded-sm text-gray-800 dark:text-white flex justify-center items-center hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors active:scale-95"
+            >
+              <Settings size={15} className="text-xs" />
+            </button>
+          </DialogTrigger>
+          <DialogContent className="p-9 overflow-hidden pl-6 max-w-[800px] min-w-[800px] h-[660px] dark:bg-brand-darker">
+            <Tabs>
+              <TabsList className="grid w-full grid-cols-6 bg-gray-100 dark:bg-brand-dark">
+                <TabsTrigger
+                  className="hover:bg-brand-bright/70 hover:text-white"
+                  value="domain"
+                >
+                  دامنه
+                </TabsTrigger>
+                <TabsTrigger value="taxonomy">Segmentهای محتوا</TabsTrigger>
+                {/* <TabsTrigger value="ips">IPهای Google</TabsTrigger> */}
+                <TabsTrigger value="logs">لاگ‌های ذخیره‌شده</TabsTrigger>
+                <TabsTrigger value="gsc">همگام‌سازی GSC</TabsTrigger>
+                <TabsTrigger value="crawl">همگام‌سازی کراول</TabsTrigger>
+                <TabsTrigger value="projects">پروژه‌ها</TabsTrigger>
+              </TabsList>
+
+              {/* SEPARATOR */}
+              {/* <div className="w-full bg-gray-700 h-[1px] hidden dark:block mt-1 mr-4" /> */}
+
+              <TabsContent value="taxonomy" className="mt-4">
+                <TaxonomyManager closeDialog={() => setSettingsOpen(false)} />
+              </TabsContent>
+
+              <TabsContent value="domain" className="mt-4">
+                <DomainManager closeDialog={() => setSettingsOpen(false)} />
+              </TabsContent>
+              <TabsContent value="logs" className="mt-4">
+                <LogsDBManager
+                  dbLogs={logsFromDB}
+                  closeDialog={() => setSettingsOpen(false)}
+                />
+              </TabsContent>
+
+              <TabsContent value="projects" className="mt-4">
+                <ProjectsDBManager />
+              </TabsContent>
+
+              <TabsContent value="gsc" className="mt-4">
+                <GSCuploadManager />
+              </TabsContent>
+              <TabsContent value="crawl" className="mt-4">
+                <CrawlUploadManager />
+              </TabsContent>
+            </Tabs>
+          </DialogContent>
+        </Dialog>
+      </>
+
+      <>
+        <aside
+          data-tooltip-id="reload-tooltip"
+          onClick={() => handleClearStoreLogs()}
+          className="dark:bg-red-800  bg-red-700 w-32 h-7 text-xs flex items-center justify-center text-white rounded-sm cursor-pointer active:scale-95 p-2 rounded-r-xl pr-4"
+        >
+          <FaRegTrashCan className="mr-2" />
+          حذف لاگ‌ها
+        </aside>
+        <Tooltip
+          id="reload-tooltip"
+          place="top"
+          content="Clear all logs"
+          className="!bg-gray-800 !text-xs"
+        />
+      </>
+    </div>
+  );
+}
+
+export default UploadButton;

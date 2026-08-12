@@ -1,0 +1,472 @@
+// @ts-nocheck
+"use client";
+
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
+import {
+  RefreshCw,
+  LogIn,
+  Plus,
+  LayoutGrid,
+  Calendar as CalendarIcon,
+  Download,
+  Loader2,
+  ArrowRight,
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { UniversalKeywordTable } from "../Shared/UniversalKeywordTable";
+import { ColumnDef } from "@tanstack/react-table";
+import DeepCrawlQueryContextMenu from "@/app/global/_components/Sidebar/GSCRankingInfo/DeepCrawlQueryContextMenu";
+import useGSCStatusStore from "@/store/GSCStatusStore";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { useDisclosure } from "@mantine/hooks";
+import GSCConnectionWizard from "./GSCConnectionWizard";
+import { Button } from "@/components/ui/button";
+import { format, subDays, isValid, parse } from "date-fns";
+import { exportToCSV } from "@/app/utils/csvUtils";
+
+// Interface defining the structure of a Keyword object
+interface GscUrl {
+  id: number;
+  query: string;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  url: string;
+  position: number;
+  date: string;
+}
+
+const GSCanalytics = () => {
+  const [gscData, setGscData] = useState<GscUrl[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const {
+    credentials,
+    isConfigured,
+    refresh: refreshStatus,
+    setGSCStoreData,
+    data,
+    startDate,
+    endDate,
+    setStartDate,
+    setEndDate,
+  } = useGSCStatusStore();
+  const [openedWizard, { open: openWizard, close: closeWizard }] =
+    useDisclosure(false);
+
+  useEffect(() => {
+    if (!startDate) {
+      setStartDate(subDays(new Date(), 7));
+    }
+    if (!endDate) {
+      setEndDate(new Date());
+    }
+  }, [startDate, endDate, setStartDate, setEndDate]);
+
+  // Helper to format date for input value (yyyy-MM-dd)
+  const formatDateForInput = (date: Date | null) => {
+    if (!date || !isValid(date)) return "";
+    try {
+      return format(date, "yyyy-MM-dd");
+    } catch (e) {
+      return "";
+    }
+  };
+
+  // Handle manual date change
+  const handleDateChange = (type: "start" | "end", value: string) => {
+    if (!value) return;
+    const date = new Date(value);
+
+    // Validate date
+    if (!isValid(date)) return;
+
+    // Adjust for timezone offset
+    const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+    const adjustedDate = new Date(date.getTime() + userTimezoneOffset);
+
+    if (type === "start") {
+      setStartDate(adjustedDate);
+    } else {
+      setEndDate(adjustedDate);
+    }
+  };
+
+  const handleFetchGSCdataFromDB = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const response = await invoke("read_gsc_data_from_db_command");
+
+      // Ensure response is an array
+      if (Array.isArray(response)) {
+        setGscData(response);
+        // SET AS GLOBAL STORE STATE
+        setGSCStoreData(response);
+      } else {
+        console.warn("GSC data from DB is not an array:", response);
+        setGscData([]);
+      }
+    } catch (error) {
+      console.error("Failed to fetch GSC URLs from DB:", error);
+      toast.error("دریافت داده‌های GSC ناموفق بود");
+      setGscData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Use data directly, as filtering is now handled by the API
+  const displayData = useMemo(() => {
+    return Array.isArray(gscData) ? gscData : [];
+  }, [gscData]);
+
+  const handleDownloadCSV = useCallback(async () => {
+    try {
+      if (displayData.length === 0) {
+        toast.error("داده‌ای برای دانلود موجود نیست");
+        return;
+      }
+
+      setIsDownloading(true);
+
+      // Prepare data for CSV export
+      const csvData = displayData.map((item) => ({
+        query: item.query,
+        impressions: item.impressions,
+        clicks: item.clicks,
+        ctr: `${(item.ctr * 100).toFixed(2)}%`,
+        position: item.position.toFixed(1),
+        url: item.url,
+        date: item.date,
+      }));
+
+      await exportToCSV(csvData, "gsc_search_console_data");
+      toast.success("فایل CSV با موفقیت ذخیره شد!", {
+        description: "File has been saved to your selected location.",
+        duration: 4000,
+      });
+    } catch (error: any) {
+      console.error("Error downloading CSV:", error);
+      if (error.message === "Save dialog was cancelled") {
+        toast.info("دانلود لغو شد", {
+          description: "You cancelled the file save dialog.",
+        });
+      } else {
+        toast.error("دانلود فایل CSV ناموفق بود", {
+          description: error.message || "Please try again.",
+        });
+      }
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [displayData]);
+
+  const handleRefreshGSC = useCallback(async () => {
+    console.log("Refreshing GSC data...");
+    try {
+      setIsLoading(true);
+      toast.info("در حال دریافت آخرین داده‌ها از Google Search Console...");
+
+      const formattedStartDate = formatDateForInput(startDate);
+      const formattedEndDate = formatDateForInput(endDate);
+
+      console.log("Invoking call_google_search_console with:", {
+        formattedStartDate,
+        formattedEndDate,
+      });
+
+      // Pass the date range to the backend
+      await invoke("call_google_search_console", {
+        startDate: formattedStartDate || null,
+        endDate: formattedEndDate || null,
+      });
+
+      console.log("GSC API call completed, refreshing status...");
+      await refreshStatus();
+
+      console.log("Fetching fresh data from DB...");
+      await handleFetchGSCdataFromDB();
+
+      console.log("GSC refresh cycle completed");
+      toast.success("داده‌های Search Console به‌روزرسانی شد");
+    } catch (error) {
+      console.error("Failed to refresh GSC data:", error);
+      // Determine if error is an object with message or string
+      const updateError =
+        error instanceof Error ? error.message : String(error);
+      toast.error(`Failed to refresh Search Console data: ${updateError}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [handleFetchGSCdataFromDB, refreshStatus, startDate, endDate]);
+
+  useEffect(() => {
+    refreshStatus();
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (isConfigured) {
+      handleFetchGSCdataFromDB();
+    }
+  }, [handleFetchGSCdataFromDB, isConfigured]);
+
+  const columns = useMemo<ColumnDef<GscUrl>[]>(
+    () => [
+      {
+        accessorKey: "query",
+        header: "Keyword",
+        cell: ({ row }) => (
+          <DeepCrawlQueryContextMenu
+            url={row.original.url}
+            query={row.original.query}
+            credentials={credentials}
+            position={row.original.position}
+            impressions={row.original.impressions}
+            clicks={row.original.clicks}
+          >
+            <span className="text-blue-600 font-semibold cursor-pointer hover:underline truncate block max-w-[200px]">
+              {row.original.query}
+            </span>
+          </DeepCrawlQueryContextMenu>
+        ),
+      },
+      {
+        accessorKey: "impressions",
+        header: "Impressions",
+        cell: ({ row }) => row.original.impressions.toLocaleString(),
+      },
+      {
+        accessorKey: "clicks",
+        header: "Clicks",
+        cell: ({ row }) => row.original.clicks.toLocaleString(),
+      },
+      {
+        accessorKey: "ctr",
+        header: "CTR",
+        cell: ({ row }) => `${(row.original.ctr * 100).toFixed(2)}%`,
+      },
+      {
+        accessorKey: "position",
+        header: "Position",
+        cell: ({ row }) => {
+          const position = Math.max(1, row.original.position);
+          let colorClass = "";
+          if (position <= 1.9) colorClass = "text-green-500";
+          else if (position <= 10) colorClass = "text-blue-500";
+          else colorClass = "text-red-500";
+          return <span className={colorClass}>{position.toFixed(1)}</span>;
+        },
+      },
+      {
+        accessorKey: "url",
+        header: "URL",
+        cell: ({ row }) => (
+          <div
+            className="max-w-[400px] truncate text-gray-500"
+            title={row.original.url}
+          >
+            {row.original.url}
+          </div>
+        ),
+      },
+      {
+        accessorKey: "date",
+        header: "Date",
+        cell: ({ row }) => {
+          let formattedDate = row.original.date;
+          try {
+            // Try to parse the date and format it as dd/mm/yyyy
+            const date = new Date(row.original.date);
+            if (isValid(date)) {
+              formattedDate = format(date, "dd/MM/yyyy");
+            }
+          } catch (e) {
+            // Keep original value if parsing fails
+          }
+          return <span className="text-gray-500 text-xs">{formattedDate}</span>;
+        },
+      },
+    ],
+    [credentials],
+  );
+
+  return (
+    <div className="px-2 h-[calc(100vh-9rem)] flex flex-col dark:text-white/50">
+      {isConfigured && (
+        <div className="flex items-center justify-between mb-2 flex-shrink-0 px-1">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
+              <LayoutGrid className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-lg font-bold dark:text-white leading-none">
+                Search Console
+              </h1>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-none">
+                {`Connected to ${credentials?.url}`}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              onClick={openWizard}
+              className="bg-brand-bright hover:bg-blue-700 text-white rounded-md px-3 h-7 flex items-center text-xs font-bold shadow-blue-500/20 transition-all active:scale-95"
+            >
+              <Plus className="h-3 w-3 mr-1.5" />
+              اتصال مجدد
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0">
+        {!isConfigured ? (
+          <div className="h-full flex flex-col justify-center max-w-2xl mx-auto px-6">
+            <AnimatePresence mode="wait">
+              {!openedWizard ? (
+                <motion.div
+                  key="intro"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="flex flex-col items-center text-center"
+                >
+                  <div className="p-6 bg-blue-50 dark:bg-blue-900/20 rounded-3xl mb-8">
+                    <LogIn className="h-16 w-16 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <h1 className="text-3xl font-bold mb-4 dark:text-white">
+                    اتصال به Search Console
+                  </h1>
+                  <p className="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed max-w-md">
+                    Google Search Console را متصل کنید تا عملکرد وب‌سایت، وضعیت ایندکس و رتبه keywordها را مستقیماً در Onwebs SEO & GEO ببینید.
+                  </p>
+                  <Button
+                    onClick={openWizard}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-6 rounded-2xl text-lg font-bold shadow-lg shadow-blue-500/30 dark:shadow-none transition-all hover:scale-[1.02] active:scale-[0.98] group"
+                  >
+                    شروع کنید
+                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                  </Button>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="wizard"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="w-full flex justify-center"
+                >
+                  <GSCConnectionWizard
+                    onComplete={() => {
+                      closeWizard();
+                      handleRefreshGSC();
+                    }}
+                    onClose={closeWizard}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        ) : (
+          <UniversalKeywordTable
+            data={displayData}
+            columns={columns}
+            searchPlaceholder="Search keywords or URL..."
+            isLoading={isLoading}
+            headerActions={
+              <div className="flex items-center gap-2">
+                {/* Date Picker Group */}
+                <div className="flex items-center gap-1.5 h-9 px-2.5 border border-gray-200 dark:border-brand-dark rounded-xl bg-white dark:bg-brand-darker shadow-sm">
+                  <CalendarIcon className="h-4 w-4 text-gray-400 shrink-0 mr-1" />
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={formatDateForInput(startDate)}
+                      onChange={(e) =>
+                        handleDateChange("start", e.target.value)
+                      }
+                      className="h-full w-[75px] text-xs bg-transparent border-none p-0 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-0 dark:[color-scheme:dark] font-medium opacity-0 absolute inset-0 cursor-pointer"
+                    />
+                    <input
+                      type="text"
+                      value={startDate ? format(startDate, "dd/MM/yyyy") : ""}
+                      readOnly
+                      placeholder="dd/mm/yyyy"
+                      className="h-full w-[75px] text-xs bg-transparent border-none p-0 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-0 font-medium pointer-events-none"
+                    />
+                  </div>
+                  <span className="text-gray-300 dark:text-gray-600 select-none">
+                    -
+                  </span>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={formatDateForInput(endDate)}
+                      onChange={(e) => handleDateChange("end", e.target.value)}
+                      min={formatDateForInput(startDate)}
+                      className="h-full w-[75px] text-xs bg-transparent border-none p-0 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-0 dark:[color-scheme:dark] font-medium opacity-0 absolute inset-0 cursor-pointer"
+                    />
+                    <input
+                      type="text"
+                      value={endDate ? format(endDate, "dd/MM/yyyy") : ""}
+                      readOnly
+                      placeholder="dd/mm/yyyy"
+                      className="h-full w-[75px] text-xs bg-transparent border-none p-0 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-0 font-medium text-right pointer-events-none"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleDownloadCSV}
+                  className="h-9 w-9 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-brand-dark rounded-xl transition-all border border-transparent hover:border-gray-200 dark:hover:border-brand-dark text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="دانلود CSV"
+                  disabled={displayData.length === 0 || isDownloading}
+                >
+                  {isDownloading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                </button>
+
+                <button
+                  onClick={handleRefreshGSC}
+                  className="h-9 w-9 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-brand-dark rounded-xl transition-all border border-transparent hover:border-gray-200 dark:hover:border-brand-dark text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  title="تازه‌سازی داده‌ها"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
+                  />
+                </button>
+                <div className="w-px h-6 bg-gray-200 dark:bg-brand-dark mx-1"></div>
+              </div>
+            }
+          />
+        )}
+      </div>
+
+      <Dialog
+        open={isConfigured && openedWizard}
+        onOpenChange={(open) => !open && closeWizard()}
+      >
+        <DialogContent
+          hideOverlay
+          className="sm:max-w-2xl p-0 border-none bg-transparent shadow-none dark:bg-transparent dark:border-none dark:shadow-none [&>button]:hidden"
+        >
+          <GSCConnectionWizard
+            onComplete={() => {
+              closeWizard();
+              handleRefreshGSC();
+            }}
+            onClose={closeWizard}
+          />
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default GSCanalytics;

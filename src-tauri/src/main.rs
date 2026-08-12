@@ -1,0 +1,511 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use crate::domain_crawler::db_deep::db;
+use crate::domain_crawler::domain_commands;
+use crate::loganalyser::database::remove_all_logs_from_serverlog_db;
+use crawler::{CrawlResult, LinkResult, PageSpeedResponse, SeoPageSpeedResponse};
+use directories::ProjectDirs;
+use globals::actions;
+use serde::{Deserialize, Serialize};
+use settings::settings::delete_config_folders_command;
+use settings::settings::get_agentic_bots_command;
+use settings::settings::get_indexing_bots_command;
+use settings::settings::get_log_file_upload_size_command;
+use settings::settings::get_project_chunk_size_command;
+use settings::settings::get_retrieval_agents_command;
+use settings::settings::get_system;
+use settings::settings::open_config_folder_command;
+use settings::settings::toggle_javascript_rendering;
+use settings::settings::update_settings_command;
+use settings::settings::Settings;
+use std::sync::Arc;
+use std::time::Duration;
+use tauri::{Emitter, Manager, WindowEvent};
+use tokio::sync::RwLock;
+use toml;
+
+pub mod api;
+pub mod app_menu;
+pub mod chat;
+pub mod crawler;
+pub mod domain_crawler;
+pub mod logging;
+pub mod settings;
+pub mod uploads;
+pub mod url_checker;
+pub mod users;
+
+pub mod machine_learning;
+
+pub mod downloads {
+    pub mod csv;
+    pub mod excel;
+    pub mod google_sheets;
+}
+
+pub mod globals {
+    pub mod actions;
+}
+
+pub mod ai_preamble;
+pub mod commands;
+pub mod gemini;
+pub mod genai;
+pub mod gsc;
+pub mod gsc_auth;
+mod image_converter;
+pub mod loganalyser;
+pub mod server;
+pub mod version;
+
+use std::sync::atomic::{AtomicU8, Ordering};
+
+// Handling the app state
+pub struct AppState {
+    pub settings: Arc<RwLock<Settings>>,
+    pub crawl_control: Arc<AtomicU8>,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+struct Config {
+    page_speed_key: String,
+    openai_key: String,
+}
+
+// IF THE SETTINGS FILE NEEDS TO BE
+// REPLACED TO AVOID ERRORS IN THE APP DUE TO BREAKING CHANGES ON THE NEW RELEASE,  SET THIS TO TRUE
+const CHECKS_VERSION: bool = true;
+
+#[tauri::command]
+async fn pause_crawl_command(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.crawl_control.store(1, Ordering::Relaxed);
+    tracing::info!("Crawl paused");
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_crawl_command(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.crawl_control.store(0, Ordering::Relaxed);
+    tracing::info!("Crawl resumed");
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_crawl_command(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.crawl_control.store(2, Ordering::Relaxed);
+    tracing::info!("Crawl stopped");
+    Ok(())
+}
+
+#[tauri::command]
+async fn crawl(url: String) -> Result<CrawlResult, String> {
+    println!("Tauri crawl command called with URL: {}", url);
+    let result = crawler::crawl(url).await;
+
+    match result {
+        Ok(result) => {
+            println!("Crawl completed successfully");
+            Ok(result)
+        }
+        Err(err) => {
+            println!("Crawl failed with error: {}", err);
+            Err(err)
+        }
+    }
+}
+
+#[tauri::command]
+async fn fetch_page_speed(
+    url: &str,
+    strategy: &str,
+) -> Result<(PageSpeedResponse, SeoPageSpeedResponse), String> {
+    let timeout = Duration::from_secs(70); // 70 seconds timeout
+
+    let result = tokio::time::timeout(
+        timeout,
+        crawler::get_page_speed_insights(url.to_string(), Some(strategy.to_string())),
+    )
+    .await;
+
+    match result {
+        Ok(inner_result) => match inner_result {
+            Ok((general_response, seo_response)) => Ok((general_response, seo_response)),
+            Err(err) => Err(err),
+        },
+        Err(_) => {
+            println!("Fetch page speed timed out after {:?}", timeout);
+            Err("Request timed out".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn fetch_google_search_console() -> Result<(), String> {
+    let result = gsc::check_google_search_console().await;
+
+    Ok(result)
+}
+
+// ----------------- GENERATE AI SUMMARY OF CONTENT -----------------
+#[tauri::command]
+async fn get_genai(query: String) -> Result<String, String> {
+    match genai::genai(query).await {
+        Ok(response) => Ok(response.content.unwrap_or_default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+//FETCH THE DATA FROM THE DB
+#[tauri::command]
+fn get_db_data() -> Result<Vec<crawler::db::ResultRecord>, String> {
+    let result = crawler::db::read_data_from_db();
+
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+// ----------------- GENERATE AI TOPICS OF CONTENT -----------------
+#[tauri::command]
+async fn generate_ai_topics(body: String) -> Result<String, String> {
+    match genai::generate_topics(body).await {
+        Ok(response) => Ok(response.content.unwrap_or_default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn get_headings_command(ai_headings: String) -> Result<String, String> {
+    match genai::generate_headings(ai_headings).await {
+        Ok(response) => Ok(response.content.unwrap_or_default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn get_jsonld_command(jsonld: String) -> Result<String, String> {
+    match genai::generate_jsonld(jsonld).await {
+        Ok(response) => Ok(response.content.unwrap_or_default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize the logger
+    let rx = logging::init();
+
+    // Telemetry disabled: upstream registered this install's UUID with
+    // api.rustyseo.com on every launch. This build never reports to a vendor.
+
+    // Set the configurations
+    let settings = match settings::settings::init_settings().await {
+        Ok(s) => Arc::new(RwLock::new(s)),
+        Err(e) => {
+            eprintln!("Failed to load settings: {}", e);
+            Arc::new(RwLock::new(Settings::default()))
+        }
+    };
+
+    // IN CASE CONFIG FILE NEEDS TO BE REPLACED FOR THE APP NOT TO GIVE ERRORS DUE TO NEW FEATURES
+    match CHECKS_VERSION {
+        false => {
+            println!("Settings loaded successfully.");
+        }
+        true => {
+            settings::settings::check_and_replace().await;
+        }
+    }
+
+    // initialise the dbs
+    let _start_db = crawler::db::databases_start();
+    // let _domain_results_db = domain_crawler::database::add_data().await;
+
+    // Start the server
+    // let _start_server = server::rusty_server().await;
+
+    // Tauri setup
+    tauri::Builder::default()
+        .menu(|handle| app_menu::build(handle))
+        .on_menu_event(|app, event| {
+            app_menu::handle_event(app, event.id().as_ref());
+        })
+        .setup(move |app| {
+            let handle = app.handle().clone();
+
+            // Clear the active DB & Server logs unconditionally on backend start
+            println!("App starting, unconditionally clearing active DB...");
+            let _ = loganalyser::active_db::init_active_db();
+            if let Err(e) = loganalyser::active_db::clear_active_db_internal() {
+                eprintln!("Error clearing active DB on startup: {}", e);
+            }
+
+            // Handle app close event to clear active DB
+            if let Some(window) = app.get_webview_window("main") {
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        println!("App closing, clearing active DB...");
+                        let _ = loganalyser::active_db::init_active_db();
+                        if let Err(e) = loganalyser::active_db::clear_active_db_internal() {
+                            eprintln!("Error clearing active DB on close: {}", e);
+                        }
+                    }
+                });
+            }
+
+            std::thread::spawn(move || {
+                while let Ok(log) = rx.recv() {
+                    let _ = handle.emit("tui-log", log);
+                }
+            });
+
+            tracing::info!(
+                "🚀 Onwebs SEO & GEO Backend logging system initialized. Ready to capture events."
+            );
+            Ok(())
+        })
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(LinkResult { links: vec![] })
+        .manage(AppState {
+            settings,
+            crawl_control: Arc::new(AtomicU8::new(0)),
+        })
+        .invoke_handler(tauri::generate_handler![
+            pause_crawl_command,
+            resume_crawl_command,
+            stop_crawl_command,
+            crawl,
+            fetch_page_speed,
+            fetch_google_search_console,
+            add_api_key,
+            get_db_data,
+            globals::actions::ai_model_selected,
+            downloads::csv::generate_csv_command,
+            commands::read_seo_data_from_db,
+            commands::check_link_status,
+            commands::write_model_to_disk,
+            commands::check_ollama,
+            commands::call_google_search_console,
+            commands::call_gsc_match_url,
+            commands::set_google_search_console_credentials,
+            image_converter::converter::handle_image_conversion,
+            image_converter::converter::process_single_image,
+            gemini::set_gemini_api_key,
+            gemini::get_gemini_config_command,
+            downloads::csv::generate_seo_csv,
+            generate_ai_topics,
+            get_genai,
+            crawler::db::clear_table_command,
+            server::ask_rusty_command,
+            server::ask_rusty_with_context_command,
+            downloads::excel::export_to_excel_command,
+            globals::actions::get_search_console_credentials,
+            globals::actions::check_ai_model,
+            globals::actions::clear_ai_model_cache,
+            commands::get_google_analytics_command,
+            commands::set_google_analytics_credentials,
+            commands::read_ga4_credentials_file,
+            commands::get_ga4_properties,
+            crawler::content::scrape_google_headings_command,
+            crawler::content::fetch_google_suggestions,
+            crawler::libs::load_api_keys,
+            crawler::libs::read_credentials_file,
+            genai::get_ai_model,
+            actions::ai_model_selected,
+            commands::set_microsoft_clarity_command,
+            commands::get_microsoft_clarity_command,
+            commands::get_microsoft_clarity_data_command,
+            version::version_check_command,
+            version::get_local_version_command,
+            get_headings_command,
+            get_jsonld_command,
+            commands::add_gsc_data_to_kw_tracking_command,
+            commands::fetch_tracked_keywords_command,
+            commands::delete_keyword_command,
+            commands::sync_keyword_tables_command,
+            commands::match_tracked_with_gsc_command,
+            commands::read_tracked_keywords_from_db_command,
+            commands::read_gsc_data_from_db_command,
+            commands::read_matched_keywords_from_db_command,
+            commands::fetch_keywords_summarized_matched_command,
+            domain_commands::domain_crawl_command,
+            domain_commands::create_excel,
+            domain_commands::create_excel_main_table,
+            domain_commands::export_full_crawl_to_excel_command,
+            // DEEP CRAWL DATABASE STUFF
+            db::create_domain_results_table,
+            db::read_domain_results_history_table,
+            db::create_domain_results_history,
+            db::delete_domain_results_history,
+            db::delete_domain_result_by_id,
+            db::delete_domain_results_by_ids,
+            db::list_custom_search_rules,
+            db::create_custom_search_rule,
+            db::update_custom_search_rule,
+            db::delete_custom_search_rule,
+            db::set_custom_search_rule_enabled,
+            domain_crawler::issues_report::store_issues_report,
+            domain_crawler::issues_report::get_issues_reports,
+            domain_commands::create_excel_two_cols,
+            domain_commands::create_css_excel,
+            domain_commands::create_keywords_excel_command,
+            domain_commands::generate_links_table_xlsx_command,
+            domain_commands::get_url_data_command,
+            domain_commands::check_assets_command,
+            domain_commands::capture_page_screenshot_command,
+            domain_commands::get_aggregated_crawl_data_command,
+            domain_commands::get_links_page_command,
+            domain_commands::get_incoming_links_command,
+            domain_commands::get_crawl_page_command,
+            domain_commands::get_crawl_total_count_command,
+            domain_commands::get_crawl_summary_stats_command,
+            domain_commands::get_link_scores_command,
+            domain_commands::find_duplicate_content_command,
+            domain_commands::export_images_to_excel_command,
+            domain_commands::export_keywords_to_excel_command,
+            domain_commands::export_redirects_to_excel_command,
+            domain_commands::export_internal_links_to_excel_command,
+            domain_commands::export_external_links_to_excel_command,
+            domain_commands::export_scripts_to_excel_command,
+            domain_commands::export_files_to_excel_command,
+            domain_commands::export_cwv_to_excel_command,
+            commands::open_configs_with_native_editor,
+            loganalyser::log_commands::check_logs_command,
+            loganalyser::log_commands::check_logs_from_paths_command,
+            loganalyser::log_commands::get_file_size,
+            loganalyser::active_db::get_active_logs_page,
+            loganalyser::active_db::get_all_logs_with_filters,
+            loganalyser::active_db::get_timeline_aggregations,
+            loganalyser::active_db::get_status_aggregations,
+            loganalyser::active_db::get_crawler_aggregations,
+            loganalyser::active_db::get_filetype_aggregations,
+            loganalyser::active_db::get_bandwidth_aggregations,
+            loganalyser::active_db::get_widget_aggregations,
+            loganalyser::active_db::get_active_logs_stats,
+            loganalyser::active_db::clear_active_db_command,
+            loganalyser::active_db::clear_all_log_data_command,
+            loganalyser::active_db::get_distinct_bot_types,
+            loganalyser::active_db::get_bot_paths_aggregated,
+            loganalyser::active_db::get_all_path_aggregations,
+            loganalyser::active_db::get_path_aggregations_page,
+            loganalyser::active_db::get_active_path_aggregations,
+            loganalyser::active_db::get_active_path_status_aggregations,
+            loganalyser::active_db::get_active_path_method_aggregations,
+            loganalyser::active_db::get_active_path_user_agent_aggregations,
+            loganalyser::active_db::get_active_path_referer_aggregations,
+            loganalyser::active_db::get_active_path_browser_aggregations,
+            loganalyser::active_db::get_active_path_verified_aggregations,
+            loganalyser::active_db::get_active_path_ip_aggregations,
+            loganalyser::active_db::get_active_path_human_aggregations,
+            loganalyser::active_db::get_trend_totals_summary,
+            loganalyser::active_db::rebuild_path_aggregations,
+            loganalyser::active_db::reclassify_all_segments,
+            loganalyser::active_db::export_server_logs_trends_excel,
+            loganalyser::active_db::export_active_logs_excel,
+            loganalyser::active_db::export_active_logs_csv,
+            loganalyser::active_db::export_aggregated_logs_csv,
+            loganalyser::helpers::parse_logs::set_taxonomies,
+            loganalyser::helpers::check_hostname::reverse_lookup,
+            loganalyser::helpers::parse_logs::fetch_all_bot_ranges,
+            domain_commands::get_url_diff_command,
+            domain_crawler::page_speed::store_key::read_page_speed_bulk_api_key,
+            domain_crawler::page_speed::store_key::check_page_speed_bulk,
+            domain_crawler::page_speed::store_key::toggle_page_speed_bulk,
+            remove_all_logs_from_serverlog_db,
+            loganalyser::database::read_logs_from_db,
+            loganalyser::database::delete_log_from_db,
+            loganalyser::database::get_stored_logs_command,
+            loganalyser::database::create_project_command,
+            loganalyser::database::get_logs_by_project_name_command,
+            commands::get_google_analytics_id,
+            loganalyser::database::get_all_projects_command,
+            loganalyser::database::delete_project_command,
+            loganalyser::database::get_logs_by_project_name_for_processing_command,
+            loganalyser::database::process_project_logs_directly_command,
+            loganalyser::database::process_single_log_from_db_command,
+            get_system,
+            get_indexing_bots_command,
+            get_retrieval_agents_command,
+            get_agentic_bots_command,
+            get_log_file_upload_size_command,
+            get_project_chunk_size_command,
+            delete_config_folders_command,
+            open_config_folder_command,
+            settings::settings::get_settings_command,
+            update_settings_command,
+            toggle_javascript_rendering,
+            url_checker::http_check::check_url,
+            loganalyser::log_commands::save_gsc_data,
+            loganalyser::log_commands::save_crawl_data,
+            loganalyser::log_commands::match_gsc_query_command,
+            loganalyser::helpers::gsc_log::load_gsc_from_database,
+            loganalyser::helpers::crawl_log::load_crawl_from_database,
+            gsc_auth::start_gsc_auth_server,
+            gsc_auth::exchange_gsc_code,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn add_api_key(key: String, api_type: String) -> Result<String, String> {
+    // Create config directory
+    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+        .ok_or_else(|| "Failed to get project directories".to_string())?;
+    let config_dir = project_dirs.config_dir();
+
+    println!("Config directory: {:?}", config_dir);
+    println!("project_dirs: {:?}", project_dirs);
+
+    std::fs::create_dir_all(config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    if api_type == "page_speed" {
+        // Create config file
+        let config = Config {
+            page_speed_key: key.clone(),
+            openai_key: "".to_string(),
+        };
+
+        let config_file = config_dir.join("api_keys.toml");
+        let toml_string =
+            toml::to_string(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        std::fs::write(&config_file, toml_string)
+            .map_err(|e| format!("Failed to write config file: {}", e))?;
+        println!(
+            "Key: {} \n added to configuration file {}",
+            key,
+            config_file.display()
+        );
+        return Ok(key);
+    }
+
+    if api_type == "openai" {
+        // Create config file
+        let config = Config {
+            page_speed_key: "".to_string(),
+            openai_key: key.clone(),
+        };
+        let config_file = config_dir.join("api_keys.toml");
+        let toml_string =
+            toml::to_string(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        std::fs::write(&config_file, toml_string)
+            .map_err(|e| format!("Failed to write config file: {}", e))?;
+        //println!("Config file created at: {}", config_file.display());
+        return Ok(key);
+    }
+
+    println!("API key: {}", key);
+    Ok(key)
+}

@@ -1,0 +1,1786 @@
+/* eslint-disable */
+// @ts-nocheck
+import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
+import {
+  AlertCircle,
+  BadgeCheck,
+  ChevronDown,
+  CircleHelp,
+  ClipboardCopy,
+  Copy,
+  CopyPlus,
+  Download,
+  FileCode,
+  FileIcon,
+  Filter,
+  FlaskRound,
+  Ghost,
+  RefreshCw,
+  Search,
+  Waypoints,
+  Image,
+  FileVideo,
+  FileAudio,
+  FileType,
+  FileText,
+  Package,
+  FileType2,
+  BadgeInfo,
+  X,
+  CopyIcon,
+  KeyRound,
+  Skull,
+} from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu";
+
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { Badge } from "@/components/ui/badge";
+import { CardContent } from "@/components/ui/card";
+import { useLogAnalysis, useLogAnalysisStore } from "@/store/ServerLogsStore";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { ask, message, save } from "@tauri-apps/plugin-dialog";
+import { SiGoogle, SiSuperuser } from "react-icons/si";
+import { toast } from "sonner";
+import { IpDisplay } from "./IpCheckModal";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useCurrentLogs } from "@/store/logFilterStore";
+import { IoClose } from "react-icons/io5";
+import { FaAngellist, FaApper, FaEye, FaFilter } from "react-icons/fa";
+import { FaFileCode, FaPersonHarassing, FaRobot } from "react-icons/fa6";
+import { ImUserTie } from "react-icons/im";
+import CrawlerType from "@/app/components/ui/Footer/CrawlerType";
+import openBrowserWindow from "@/app/Hooks/OpenBrowserWindow";
+import {
+  handleURLClick,
+  handleCopyClick,
+} from "../WidgetTables/helpers/useCopyOpen";
+import { useExcelLoading } from "@/store/ServerLogsGlobalStore";
+import useGSCStatusStore from "@/store/GSCStatusStore";
+import { RankingsLogs } from "../Rankings/RankingsLogs";
+import FetchMatchGSC from "./utils/FetchMatchGSC";
+import { DangerIndicator } from "./utils/checkPathForDanger";
+import { invoke } from "@tauri-apps/api/core";
+
+export function LogAnalyzer() {
+  const entries = useLogAnalysisStore((state) => state.entries);
+  const totalCount = useLogAnalysisStore((state) => state.totalCount);
+  const isLoading = useLogAnalysisStore((state) => state.isLoading);
+  const error = useLogAnalysisStore((state) => state.error);
+  const widgetAggs = useLogAnalysisStore((state) => state.widgetAggs);
+  const botTypes = useLogAnalysisStore((state) => state.botTypes);
+
+  const fetchLogsFromDb = useLogAnalysisStore((state) => state.fetchLogsFromDb);
+  const fetchBotTypes = useLogAnalysisStore((state) => state.fetchBotTypes);
+  const fetchWidgetAggregations = useLogAnalysisStore(
+    (state) => state.fetchWidgetAggregations,
+  );
+  const fetchOverviewStats = useLogAnalysisStore(
+    (state) => state.fetchOverviewStats,
+  );
+  const setActiveFilters = useLogAnalysisStore(
+    (state) => state.setActiveFilters,
+  );
+  const setTableIsFiltered = useLogAnalysisStore(
+    (state) => state.setTableIsFiltered,
+  );
+  const tableIsFiltered = useLogAnalysisStore((state) => state.tableIsFiltered);
+  const resetAll = useLogAnalysisStore((state) => state.resetAll);
+  const isProcessingLogs = useLogAnalysisStore((state) => state.isProcessingLogs);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(100);
+
+  const [localFilters, setLocalFilters] = useState({
+    statusFilter: [] as number[],
+    methodFilter: [] as string[],
+    fileTypeFilter: [] as string[],
+    botFilter: "all" as string | null,
+    verifiedFilter: null as boolean | null,
+    botTypeFilter: "all" as string | null,
+    crawlerTypeFilter: null as string | null,
+    sortConfig: {
+      key: "timestamp",
+      direction: "ascending" as "ascending" | "descending",
+    } as { key: string; direction: "ascending" | "descending" } | null,
+  });
+
+  const {
+    statusFilter,
+    methodFilter,
+    fileTypeFilter,
+    botFilter,
+    verifiedFilter,
+    botTypeFilter,
+    crawlerTypeFilter,
+    sortConfig,
+  } = localFilters;
+
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [ipModal, setIpModal] = useState(false);
+  const [ip, setIP] = useState("");
+  const [domain, setDomain] = useState("");
+  const [showOnTables, setShowOnTables] = useState(false);
+  const [selectedLog, setSelectedLog] = useState<any | null>(null);
+
+  // Tracks whether isProcessingLogs just transitioned true→false so we can
+  // skip the 300ms-deferred queries in that case. page.tsx's log-analysis-complete
+  // handler already calls fetchLogsFromDb immediately after processing ends,
+  // and log-aggregations-ready calls fetchWidgetAggregations once the rebuild
+  // finishes. Firing the same queries 300ms later is redundant and —
+  // because fetchOverviewStats holds DB_CONN for COUNT(DISTINCT) scans on the
+  // full table — serialises every other pending query behind it, causing the
+  // freeze that appears when appending the same project a second time.
+  const prevIsProcessingRef = useRef(isProcessingLogs);
+
+  // Load bot types on mount
+  useEffect(() => {
+    fetchBotTypes();
+  }, [fetchBotTypes, totalCount]);
+
+  const allStatusCodes = useMemo(() => {
+    if (!widgetAggs?.status_codes) return [];
+    return Object.keys(widgetAggs.status_codes)
+      .map(Number)
+      .sort((a, b) => a - b);
+  }, [widgetAggs]);
+
+  // Search state - only filters when button is pressed
+  const [searchInput, setSearchInput] = useState("");
+  const [activeSearchTerm, setActiveSearchTerm] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+  const [showIp, setShowIp] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
+  const [showReferer, setShowReferer] = useState(false);
+  const [urlAgentFilter, setUrlAgentFilter] = useState("url");
+
+  const [posColumn, setPosColumn] = useState("position");
+  const { ExcelLoaded, setExcelLoaded } = useExcelLoading();
+
+  useEffect(() => {
+    const checkGsc = () => {
+      const isGscLoaded = localStorage.getItem("GscExcel") === "true";
+      if (isGscLoaded !== ExcelLoaded) {
+        setExcelLoaded(isGscLoaded);
+      }
+    };
+    checkGsc();
+    const interval = setInterval(checkGsc, 500);
+    return () => clearInterval(interval);
+  }, [ExcelLoaded, setExcelLoaded]);
+
+  // GSC Status
+  const {
+    isConfigured,
+    credentials,
+    isLoading: gscLoading,
+    updateStatus,
+    refreshStatus,
+    data,
+    setSelectedURLDetails,
+  } = useGSCStatusStore();
+
+  const GSCdata = data;
+
+  // console.log("GSC DATA", credentials);
+
+  const cyclePosColumn = () => {
+    setPosColumn((prev) => {
+      if (prev === "position") return "clicks";
+      if (prev === "clicks") return "impressions";
+      if (prev === "impressions") return "ctr";
+      return "position";
+    });
+  };
+
+  const getPositionBadgeColor = useCallback((position: any) => {
+    const posNum =
+      typeof position === "string" ? parseFloat(position) : position;
+
+    if (posNum === undefined || posNum === null || isNaN(posNum)) {
+      return "border-brand-bright/50"; // Default border if not a valid number
+    }
+    if (posNum < 5) {
+      return "bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 border-green-300 dark:border-green-700"; // Muted green
+    } else if (posNum <= 10) {
+      // position > 5 and <= 10
+      return "bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700"; // Yellow
+    } else if (posNum <= 20) {
+      // position > 10 and <= 20
+      return "bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200 border-orange-300 dark:border-orange-700"; // Orange
+    } else {
+      // position > 20
+      return "bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200 border-red-300 dark:border-red-700"; // Red
+    }
+  }, []);
+
+  // Helper functions - memoized for performance
+  const formatDate = useCallback((dateString: string) => {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(date);
+  }, []);
+
+  const getFileIcon = useCallback((path) => {
+    switch (path) {
+      case "HTML":
+        return <FileCode type="html" className="text-blue-400" size={14} />;
+      case "Image":
+        return <Image className="text-green-600" size={14} />;
+      case "Video":
+        return <FileVideo size={14} />;
+      case "Audio":
+        return <FileAudio size={14} />;
+      case "PHP":
+        return <FileCode className="text-blue-400" type="php" size={14} />;
+      case "TXT":
+        return <FileType size={14} className="text-purple-400" />;
+      case "CSS":
+        return <FileCode type="css" className="text-yellow-400" size={14} />;
+      case "JS":
+        return <FileCode type="javascript" size={14} />;
+      case "Document":
+        return <FileText className="text-red-500" size={14} />;
+      case "Archive":
+        return <Package size={14} />;
+      case "Font":
+        return <FileType2 size={14} />;
+      default:
+        return <FileCode size={14} />;
+    }
+  }, []);
+
+  const getStatusCodeColor = useCallback((code: number) => {
+    if (code >= 200 && code < 300)
+      return "bg-green-100 border-green-200 text-green-800 dark:bg-green-700 hover:bg-green-500 dark:text-white";
+    if (code >= 300 && code < 400)
+      return "bg-blue-400 dark:bg-blue-700 dark:text-white";
+    if (code >= 400 && code < 500)
+      return "bg-red-400 dark:bg-red-600 dark:text-white text-white";
+    if (code >= 500) return "bg-red-400 text-white";
+    return "bg-gray-500";
+  }, []);
+
+  const formatResponseSize = useCallback((bytes: number) => {
+    if (bytes === null || bytes === undefined || Number.isNaN(bytes)) {
+      return "0 B";
+    }
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }, []);
+
+  // Search handlers - no debouncing, immediate response
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value);
+  };
+
+  const handleSearchClick = () => {
+    setActiveSearchTerm(searchInput);
+    setCurrentPage(1);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      setActiveSearchTerm(searchInput);
+      setCurrentPage(1);
+    }
+  };
+
+  // Fetch logs from DB when filters or page change.
+  // Skipped while isProcessingLogs — the log-analysis-complete handler in page.tsx
+  // is the single source for DB fetches during processing, so running these
+  // concurrently on every totalCount change would fire 7+ queries per log (and grow
+  // with DB size), causing the progressive slowdown around the 20th log.
+  // Also skipped for the single render cycle where isProcessingLogs transitions
+  // true→false: page.tsx already called fetchLogsFromDb immediately, and
+  // log-aggregations-ready called fetchWidgetAggregations once the rebuild finished.
+  // The only extra query here would be fetchOverviewStats, which does two full-table
+  // COUNT(DISTINCT) scans and holds DB_CONN for seconds on large datasets — exactly
+  // what serialises every other pending query and causes the freeze on second append.
+  useEffect(() => {
+    const justFinishedProcessing = prevIsProcessingRef.current === true && isProcessingLogs === false;
+    prevIsProcessingRef.current = isProcessingLogs;
+
+    if (isProcessingLogs) return;
+    // page.tsx + log-aggregations-ready already handled the post-processing fetch.
+    if (justFinishedProcessing) return;
+
+    const filters = {
+      search_term: activeSearchTerm,
+      status_filter: statusFilter,
+      method_filter: methodFilter,
+      file_type_filter: fileTypeFilter,
+      bot_filter: botFilter === "all" ? null : botFilter,
+      bot_type_filter: botTypeFilter === "all" ? null : botTypeFilter,
+      crawler_type_filter: crawlerTypeFilter,
+      verified_filter: verifiedFilter,
+      sort_key: sortConfig?.key || "timestamp",
+      sort_dir:
+        sortConfig?.direction === "descending" ? "descending" : "ascending",
+    };
+
+    const timeoutId = setTimeout(() => {
+      const store = useLogAnalysisStore.getState();
+      store.fetchLogsFromDb(currentPage, itemsPerPage, filters);
+      store.setActiveFilters(filters);
+      store.fetchWidgetAggregations(filters);
+
+      // Check if any filter is active
+      const hasFilter =
+        activeSearchTerm ||
+        statusFilter.length > 0 ||
+        methodFilter.length > 0 ||
+        fileTypeFilter.length > 0 ||
+        botFilter !== "all" ||
+        botTypeFilter !== "all" ||
+        crawlerTypeFilter !== null ||
+        verifiedFilter !== null;
+
+      // fetchOverviewStats does two COUNT(DISTINCT) full-table scans and holds
+      // DB_CONN for the entire duration. Without active filters the stats are
+      // already accurate from setLogData(replace) in the complete handler, so
+      // only run this expensive query when the user has actually applied a filter.
+      if (hasFilter) {
+        store.fetchOverviewStats();
+      }
+
+      store.setTableIsFiltered(!!hasFilter);
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [totalCount, activeSearchTerm, localFilters, currentPage, itemsPerPage, isProcessingLogs]);
+
+  // Reset to first page when search or filters change (except sorting)
+  // We use a separate effect to avoid complex logic in the main fetch effect
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    activeSearchTerm,
+    statusFilter,
+    methodFilter,
+    fileTypeFilter,
+    botFilter,
+    botTypeFilter,
+    crawlerTypeFilter,
+    verifiedFilter,
+  ]);
+
+  // GET THE domain from the local storage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const storedDomain = localStorage.getItem("domain");
+      if (storedDomain) {
+        setDomain(storedDomain);
+      }
+
+      const isShowing = localStorage.getItem("showOnTables");
+      if (isShowing === "true") {
+        setShowOnTables(true);
+      }
+    }
+  }, []);
+
+  // Set the Zustand store with the current logs
+  useEffect(() => {
+    useCurrentLogs.getState().setCurrentLogs(entries);
+  }, [entries]);
+
+  // Display current page of logs directly from the backend-powered store result
+  const currentLogs = entries;
+  const totalPages = Math.ceil(totalCount / itemsPerPage);
+
+  // Handle sorting
+  const requestSort = useCallback((key: string) => {
+    setLocalFilters((prev) => ({
+      ...prev,
+      sortConfig: {
+        key,
+        direction:
+          prev.sortConfig?.key === key &&
+          prev.sortConfig.direction === "ascending"
+            ? ("descending" as const)
+            : ("ascending" as const),
+      },
+    }));
+  }, []);
+
+  // Reset all filters
+  const resetFilters = useCallback(() => {
+    setSearchInput("");
+    setActiveSearchTerm("");
+    setCurrentPage(1); // Crucial for performance
+    setLocalFilters({
+      statusFilter: [],
+      methodFilter: [],
+      botFilter: "all",
+      sortConfig: null,
+      fileTypeFilter: [],
+      verifiedFilter: null,
+      botTypeFilter: "all",
+      crawlerTypeFilter: null,
+    });
+    setExpandedRow(null);
+    setShowAgent(false);
+    setShowReferer(false);
+    setUrlAgentFilter("url");
+
+    // Clear filtered state
+    const store = useLogAnalysisStore.getState();
+    store.setTableIsFiltered(false);
+  }, []);
+
+  const exportCSV = useCallback(async () => {
+    try {
+      // 1. Show save dialog to get file path
+      const filePath = await save({
+        defaultPath: `Onwebs SEO & GEO - Server-Logs-${new Date().toISOString().slice(0, 10)}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+
+      if (!filePath) {
+        toast.error("خروجی گرفتن لغو شد.");
+        return;
+      }
+
+      // Set the loader spinning
+      setIsExporting(true);
+
+      // 2. Call the backend to export ALL data directly from SQLite to CSV
+      //    This bypasses IPC serialization entirely — no row limits
+      const totalExported = await invoke<number>("export_active_logs_csv", {
+        filePath,
+        includeGsc: ExcelLoaded,
+      });
+
+      setIsExporting(false);
+      toast.success(
+        `CSV exported successfully! (${totalExported.toLocaleString()} rows)`,
+      );
+      message(
+        `CSV exported successfully! (${totalExported.toLocaleString()} rows)`,
+      );
+    } catch (error) {
+      setIsExporting(false);
+      console.error("Export failed:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      toast.error(`Export failed: ${errorMessage}`);
+    }
+  }, [ExcelLoaded]);
+
+  const handleIP = useCallback((ip: string) => {
+    setIpModal(true);
+    setIP(ip);
+  }, []);
+
+  const mac = process.platform === "darwin";
+
+  // if (isLoading) {
+  //   return (
+  //     <div className="flex items-center justify-center h-full">
+  //       <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary" />
+  //     </div>
+  //   );
+  // }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full text-destructive">
+        <AlertCircle className="h-5 w-5 mr-2" />
+        {error}
+      </div>
+    );
+  }
+
+  function formatedNumber(num) {
+    return num.toLocaleString("en-UK", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  }
+
+  function logIpMasking(ip: string): string {
+    if (!ip) return "";
+
+    if (ip.includes(":")) {
+      // Likely IPv6
+      return ip
+        .split(":")
+        .map((part, i) => (i < 2 ? part : "###"))
+        .join(":");
+    } else if (ip.includes(".")) {
+      // Likely IPv4
+      return ip
+        .split(".")
+        .map((part, i) => (i < 2 ? part : "###"))
+        .join(".");
+    }
+
+    // Unknown format, return masked
+    return "***.***.***.***";
+  }
+
+  // Style the crawler type output
+  function formatCrawlerType(log: string) {
+    if (!log) return "";
+
+    if (log?.crawler_type === "Human") {
+      return log.crawler_type
+        .split("_")
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
+    }
+
+    if (log?.crawler_type?.includes("Google")) {
+      return log?.crawler_type;
+    }
+
+    if (log?.crawler_type.length > 14) {
+      return log.crawler_type.slice(0, 12);
+    }
+
+    return log?.crawler_type;
+  }
+
+  return (
+    <TooltipProvider>
+      {selectedLog && (
+        <RankingsLogs
+          isOpen={!!selectedLog}
+          onClose={() => setSelectedLog(null)}
+          url={
+            domain && selectedLog.path
+              ? `https://${domain}${selectedLog.path}`
+              : selectedLog.path
+          }
+        />
+      )}
+      <div className="space-y-4 flex flex-col flex-1 h-full not-selectable">
+        <div className="flex flex-col md:flex-row justify-between relative -mb-4 p-1 h-full">
+          {ipModal && (
+            <div className="absolute z-50 top-1/3 left-1/2 transform -translate-x-1/2 -translate-y-[2rem]">
+              <IpDisplay ip={ip} close={setIpModal} />
+            </div>
+          )}
+
+          <div className="relative w-full mr-1">
+            <Search className="absolute dark:text-white/50 left-2.5 top-3 h-4 w-4 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="جستجو بر اساس IP، مسیر، user agent..."
+              className="pl-8 w-full dark:text-white"
+              value={searchInput}
+              onChange={handleSearchChange}
+              onKeyDown={handleKeyDown}
+            />
+            <button
+              onClick={handleSearchClick}
+              className="absolute right-2 border-brand-bright border hover:bg-brand-bright hover:text-white text-black bg-white dark:bg-brand-darker   h-6 min-w-16   top-2 rounded-l-md px-2 dark:text-white text-xs dark:hover:bg-brand-bright"
+            >
+              search
+            </button>
+            {searchInput && (
+              <X
+                size={14}
+                className="absolute right-[75px] text-red-500 w-6 dark:text-red-500 top-[13px] rounded-md text-xs bg-white dark:bg-brand-darker cursor-pointer"
+                onClick={() => {
+                  setSearchInput("");
+                  setActiveSearchTerm("");
+                  setCurrentPage(1);
+                }}
+              />
+            )}{" "}
+          </div>
+
+          <div className="flex flex-1 gap-1">
+            {/* Status Code Filter */}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex gap-2 dark:bg-brand-darker dark:text-white dark:border-brand-dark"
+                >
+                  <Filter className="h-4 w-4" />
+                  Status
+                  {statusFilter.length > 0 && (
+                    <Badge variant="secondary" className="ml-0">
+                      {statusFilter.length}
+                    </Badge>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent
+                align="center"
+                className="w-48 m-0 bg-white dark:bg-brand-darker text-left dark:text-white dark:border-brand-dark max-h-64 overflow-y-auto"
+              >
+                <DropdownMenuLabel>فیلتر بر اساس وضعیت</DropdownMenuLabel>
+
+                <DropdownMenuSeparator />
+
+                {allStatusCodes.map((code) => (
+                  <DropdownMenuCheckboxItem
+                    className="hover:bg-brand-blue active:text-black hover:text-white dark:text-white"
+                    key={code}
+                    checked={statusFilter.includes(code)}
+                    onCheckedChange={(checked) => {
+                      setLocalFilters((prev) => ({
+                        ...prev,
+                        statusFilter: checked
+                          ? [...prev.statusFilter, code]
+                          : prev.statusFilter.filter((c) => c !== code),
+                      }));
+                    }}
+                  >
+                    <Badge
+                      variant="outline"
+                      className={`mr-2 ${getStatusCodeColor(code)}`}
+                    >
+                      {code}
+                    </Badge>
+
+                    {code >= 200 && code < 300
+                      ? "Success"
+                      : code >= 300 && code < 400
+                        ? "Redirection"
+                        : code >= 400 && code < 500
+                          ? "Client Error"
+                          : "Server Error"}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Method Filter */}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex gap-2 dark:bg-brand-darker dark:text-white dark:border-brand-dark"
+                >
+                  <Filter className="h-4 w-4" />
+                  Method
+                  {methodFilter.length > 0 && (
+                    <Badge variant="secondary" className="ml-1">
+                      {methodFilter.length}
+                    </Badge>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent
+                align="end"
+                className="bg-white dark:border-brand-dark dark:text-white dark:active:bg-brand-bright dark:bg-brand-darker"
+              >
+                <DropdownMenuLabel>فیلتر بر اساس متد</DropdownMenuLabel>
+
+                <DropdownMenuSeparator />
+
+                {["GET", "POST", "PUT", "DELETE", "HEAD"].map((method) => (
+                  <DropdownMenuCheckboxItem
+                    className="bg-white active:bg-gray-100 hover:text-white dark:bg-brand-darker dark:hover:bg-brand-bright"
+                    key={method}
+                    checked={methodFilter.includes(method)}
+                    onCheckedChange={(checked) => {
+                      setLocalFilters((prev) => ({
+                        ...prev,
+                        methodFilter: checked
+                          ? [...prev.methodFilter, method]
+                          : prev.methodFilter.filter((m) => m !== method),
+                      }));
+                    }}
+                  >
+                    {method}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* FileType Filter */}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex gap-2 dark:bg-brand-darker dark:text-white dark:border-brand-dark"
+                >
+                  <Filter className="h-4 w-4" />
+                  File Type
+                  {fileTypeFilter.length > 0 && (
+                    <Badge variant="secondary" className="ml-1">
+                      {fileTypeFilter.length}
+                    </Badge>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent
+                align="end"
+                className="bg-white dark:border-brand-dark dark:text-white dark:bg-brand-darker"
+              >
+                <DropdownMenuLabel>فیلتر بر اساس نوع فایل</DropdownMenuLabel>
+
+                <DropdownMenuSeparator />
+
+                {[
+                  "HTML",
+
+                  "CSS",
+
+                  "JS",
+
+                  "PHP",
+
+                  "TXT",
+
+                  "Image",
+
+                  "Video",
+
+                  "Audio",
+
+                  "Document",
+
+                  "Archive",
+
+                  "Font",
+                ].map((fileType) => (
+                  <DropdownMenuCheckboxItem
+                    className="bg-white active:bg-brand-bright hover:text-white dark:bg-brand-darker dark:hover:bg-brand-bright"
+                    key={fileType}
+                    checked={fileTypeFilter.includes(fileType)}
+                    onCheckedChange={(checked) => {
+                      setLocalFilters((prev) => ({
+                        ...prev,
+                        fileTypeFilter: checked
+                          ? [...prev.fileTypeFilter, fileType]
+                          : prev.fileTypeFilter.filter((m) => m !== fileType),
+                      }));
+                    }}
+                  >
+                    {fileType}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Bot/Human Filter */}
+
+            {/*<Select
+              value={botFilter || "all"}
+              onValueChange={(value) =>
+                setLocalFilters((prev) => ({
+                  ...prev,
+                  botFilter: value === "all" ? null : value,
+                }))
+              }
+            >
+              <SelectTrigger className="w-[125px] dark:bg-brand-darker dark:text-white">
+                <SelectValue placeholder="ربات/انسان" />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="all">همه درخواست‌ها</SelectItem>
+
+                <SelectItem value="bot">🤖 Robots</SelectItem>
+
+                <SelectItem value="Human">🙋 Human</SelectItem>
+              </SelectContent>
+            </Select>*/}
+
+            {/* USER AGENT AND URL FILTER */}
+
+            <Select
+              value={urlAgentFilter}
+              onValueChange={(value) => {
+                setUrlAgentFilter(value);
+
+                setShowAgent(value === "agent");
+                setShowReferer(value === "referer");
+              }}
+            >
+              <SelectTrigger className="w-[125px] dark:bg-brand-darker dark:text-white">
+                <SelectValue placeholder="مسیرها" />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="url">مسیر / URL</SelectItem>
+
+                <SelectItem value="agent">User Agent</SelectItem>
+
+                <SelectItem value="referer">Referer</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* SELECT BOT TYPE (DESKTOP OR MOBILE) */}
+
+            <Select
+              value={botTypeFilter === null ? "all" : botTypeFilter}
+              onValueChange={(value) =>
+                setLocalFilters((prev) => ({
+                  ...prev,
+                  botTypeFilter: value === "all" ? null : value,
+                }))
+              }
+            >
+              <SelectTrigger className="w-[120px] dark:bg-brand-darker dark:text-white">
+                <SelectValue placeholder="ربات/انسان" />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="all">همه دستگاه‌ها</SelectItem>
+
+                <SelectItem value="Desktop">دسکتاپ</SelectItem>
+
+                <SelectItem value="Mobile">موبایل</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* SELECT VEREFIED OR NOT VERIFIED */}
+
+            <Select
+              value={
+                verifiedFilter === null
+                  ? "all"
+                  : verifiedFilter
+                    ? "verified"
+                    : "unverified"
+              }
+              onValueChange={(value) => {
+                setLocalFilters((prev) => ({
+                  ...prev,
+                  verifiedFilter: value === "all" ? null : value === "verified",
+                }));
+              }}
+            >
+              <SelectTrigger className="w-[130px] dark:bg-brand-darker dark:text-white">
+                <SelectValue placeholder="وضعیت تأیید" />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="all">همه IPها</SelectItem>
+
+                <SelectItem className="flex" value="verified">
+                  <div className="flex items-center">
+                    <BadgeCheck
+                      className="text-xs active:text-brand-bright hover:white active:white"
+                      size={17}
+                    />
+
+                    <span className="ml-1 inline-block">تأیید‌شده</span>
+                  </div>
+                </SelectItem>
+
+                <SelectItem value="unverified">
+                  <div className="flex">
+                    <BadgeInfo size={17} />{" "}
+                    <span className="ml-1">تأییدنشده</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {/* FILTER BY HUMAN, BOTS, OR SPECIFIC CRAWLER */}
+            <Select
+              value={
+                crawlerTypeFilter
+                  ? `crawler:${crawlerTypeFilter}`
+                  : botFilter === "bot"
+                    ? "bot"
+                    : botFilter === "Human"
+                      ? "Human"
+                      : "all"
+              }
+              onValueChange={(value) => {
+                if (value === "all") {
+                  setLocalFilters((prev) => ({
+                    ...prev,
+                    botFilter: "all",
+                    crawlerTypeFilter: null,
+                  }));
+                } else if (value === "Human") {
+                  setLocalFilters((prev) => ({
+                    ...prev,
+                    botFilter: "Human",
+                    crawlerTypeFilter: null,
+                  }));
+                } else if (value === "bot") {
+                  setLocalFilters((prev) => ({
+                    ...prev,
+                    botFilter: "bot",
+                    crawlerTypeFilter: null,
+                  }));
+                } else if (value.startsWith("crawler:")) {
+                  const crawlerName = value.replace("crawler:", "");
+                  setLocalFilters((prev) => ({
+                    ...prev,
+                    botFilter: "bot",
+                    crawlerTypeFilter: crawlerName,
+                  }));
+                }
+              }}
+            >
+              <SelectTrigger className="w-[150px] active:scale-95 dark:bg-brand-darker dark:text-white dark:border-brand-dark">
+                <SelectValue placeholder="نوع ترافیک" />
+              </SelectTrigger>
+              <SelectContent className="dark:bg-brand-darker dark:text-white dark:border-brand-dark">
+                <SelectItem value="all">
+                  <div className="flex items-center">
+                    <Filter className="h-3.5 w-3.5 mr-1.5" />
+                    <span>همه ترافیک</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="Human">
+                  <div className="flex items-center">
+                    <FaPersonHarassing className="mr-1.5" />
+                    <span>انسان‌ها</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="bot">
+                  <div className="flex items-center">
+                    <FaRobot className="mr-1.5" />
+                    <span>همه Botها</span>
+                  </div>
+                </SelectItem>
+                {botTypes.length > 0 &&
+                  botTypes.map((type) => (
+                    <SelectItem key={type} value={`crawler:${type}`}>
+                      <div className="flex items-center">
+                        <Ghost className="h-3.5 w-3.5 mr-1.5" />
+                        <span>{type}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+
+            <Button
+              variant="outline"
+              onClick={resetFilters}
+              className="flex gap-2 dark:bg-brand-darker dark:border-brand-dark dark:text-white"
+            >
+              <RefreshCw className="h-4 w-4" />
+              بازنشانی
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={exportCSV}
+              disabled={isExporting}
+              className="flex gap-2 dark:bg-brand-darker dark:border-brand-dark dark:text-white"
+            >
+              {isExporting ? (
+                <>
+                  <div className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" />
+                  در حال خروجی گرفتن...
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4" />
+                  خروجی CSV
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <CardContent
+            className="p-0"
+            style={{
+              height: "calc(100vh - 27.2rem)",
+            }}
+          >
+            <div className="rounded-md border dark:border-brand-dark h-full logs">
+              <div className="relative w-full h-full overflow-auto">
+                <Table className="logs relative">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[60px] text-center">#</TableHead>
+
+                      <TableHead className="w-[140px] cursor-pointer">
+                        <div className="flex space-x-2 items-center">
+                          <span onClick={() => requestSort("ip")}>
+                            آدرس IP
+                          </span>
+
+                          {sortConfig?.key === "ip" && (
+                            <ChevronDown
+                              className={`ml-1 h-4 w-4 inline-block ${
+                                sortConfig.direction === "descending"
+                                  ? "rotate-180"
+                                  : ""
+                              }`}
+                            />
+                          )}
+
+                          <FaEye
+                            className="ml-2"
+                            onClick={() => setShowIp(!showIp)}
+                          />
+                        </div>
+                      </TableHead>
+
+                      <TableHead
+                        className="w-[50px] cursor-pointer"
+                        onClick={() => requestSort("method")}
+                      >
+                        Method
+                        {sortConfig?.key === "method" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      <TableHead
+                        className="cursor-pointer text-center w-[40px]"
+                        onClick={() => requestSort("browser")}
+                      >
+                        Browser
+                        {sortConfig?.key === "browser" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      <TableHead
+                        className="w-[200px] cursor-pointer text-left"
+                        onClick={() => requestSort("timestamp")}
+                      >
+                        Timestamp
+                        {sortConfig?.key === "timestamp" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      <TableHead
+                        className="w-[60px] cursor-pointer"
+                        onClick={() => requestSort("status")}
+                      >
+                        Status
+                        {sortConfig?.key === "status" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      <TableHead
+                        className="cursor-pointer pl-7"
+                        onClick={() => requestSort("path")}
+                      >
+                        {showAgent
+                          ? "User Agent"
+                          : showReferer
+                            ? "Referer"
+                            : "Path"}
+
+                        {sortConfig?.key === "path" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      {/* HERE CONDITIONALLY RENDER THE HEAD FOR POSITION IF TOGGLED */}
+
+                      {ExcelLoaded && !showAgent && !showReferer && (
+                        <TableHead
+                          className="w-[50px] text-center cursor-pointer"
+                          onClick={cyclePosColumn}
+                        >
+                          {posColumn === "position"
+                            ? "Position"
+                            : posColumn === "clicks"
+                              ? "Clicks"
+                              : posColumn === "ctr"
+                                ? "CTR"
+                                : "Impr"}
+                        </TableHead>
+                      )}
+
+                      <TableHead className="min-w-[50px] w-[80px] max-w-[100px] text-center">
+                        Segment
+                      </TableHead>
+
+                      <TableHead
+                        className="w-[80px] cursor-pointer"
+                        onClick={() => requestSort("file_type")}
+                      >
+                        File Type
+                        {sortConfig?.key === "file_type" && (
+                          <ChevronDown
+                            className={`ml-1 h-4 w-4 inline-block ${
+                              sortConfig.direction === "descending"
+                                ? "rotate-180"
+                                : ""
+                            }`}
+                          />
+                        )}
+                      </TableHead>
+
+                      {!showAgent && !showReferer && (
+                        <TableHead
+                          className="w-[80px] cursor-pointer"
+                          onClick={() => requestSort("responseSize")}
+                        >
+                          Size
+                          {sortConfig?.key === "responseSize" && (
+                            <ChevronDown
+                              className={`ml-1 h-4 w-4 inline-block ${
+                                sortConfig.direction === "descending"
+                                  ? "rotate-180"
+                                  : ""
+                              }`}
+                            />
+                          )}
+                        </TableHead>
+                      )}
+
+                      <TableHead align="center" className="text-left w-[100px]">
+                        نوع کراولر
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody className="relative">
+                    {entries.length > 0 ? (
+                      currentLogs.map((log, index) => (
+                        <LogRow
+                          key={`${log.ip}-${log.timestamp}-${index}`}
+                          log={log}
+                          index={index}
+                          indexOfFirstItem={(currentPage - 1) * itemsPerPage}
+                          expandedRow={expandedRow}
+                          setExpandedRow={setExpandedRow}
+                          handleIP={handleIP}
+                          showOnTables={showOnTables}
+                          domain={domain}
+                          formatDate={formatDate}
+                          getFileIcon={getFileIcon}
+                          getStatusCodeColor={getStatusCodeColor}
+                          formatResponseSize={formatResponseSize}
+                          showIp={showIp}
+                          showAgent={showAgent}
+                          setShowAgent={setShowAgent}
+                          showReferer={showReferer}
+                          setShowReferer={setShowReferer}
+                          logIpMasking={logIpMasking}
+                          formatCrawlerType={formatCrawlerType}
+                          handleURLClick={handleURLClick}
+                          handleCopyClick={handleCopyClick}
+                          posColumn={posColumn}
+                          ExcelLoaded={ExcelLoaded}
+                          getPositionBadgeColor={getPositionBadgeColor}
+                          credentials={credentials}
+                          setSelectedLog={setSelectedLog}
+                          GSCdata={GSCdata}
+                          setSelectedURLDetails={setSelectedURLDetails}
+                        />
+                      ))
+                    ) : (
+                      <TableRow className="min-h-full h-[calc(100vh-39vh)] max-h-full bg-white">
+                        <TableCell
+                          colSpan={11}
+                          className="*:)] h-[calc(100vh-39vh)] max-h-full bg-white text-center text-black/50 dark:text-white/50 dark:bg-brand-darker"
+                          style={{
+                            lineHeight: "calc(100vh - 39vh)",
+                            verticalAlign: "middle",
+                          }}
+                        >
+                          هیچ لاگی پیدا نشد.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </CardContent>
+
+          <div className="h-5 dark:bg-brand-darker bg-white dark:border-t border-l dark:border-l-brand-dark dark:border-r-brand-dark border-r border-t-0 border-t-brand-dark w-full absolute  top-[18.9rem]  -z-1" />
+        </div>
+
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={totalPages}
+          setCurrentPage={setCurrentPage}
+          itemsPerPage={itemsPerPage}
+          setItemsPerPage={setItemsPerPage}
+          totalCount={totalCount}
+          entries={entries}
+          formatedNumber={formatedNumber}
+          tableIsFiltered={tableIsFiltered}
+        />
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// Extracted LogRow component - memoized to prevent re-renders of all rows on every state change
+const LogRow = memo(function LogRow({
+  log,
+  index,
+  indexOfFirstItem,
+  expandedRow,
+  setExpandedRow,
+  handleIP,
+  showOnTables,
+  domain,
+  formatDate,
+  getFileIcon,
+  getStatusCodeColor,
+  formatResponseSize,
+  showIp,
+  showAgent,
+  setShowAgent,
+  showReferer,
+  setShowReferer,
+  logIpMasking,
+  formatCrawlerType,
+  handleURLClick,
+  handleCopyClick,
+  posColumn,
+  ExcelLoaded,
+  getPositionBadgeColor,
+  credentials,
+  setSelectedLog,
+  GSCdata,
+  setSelectedURLDetails,
+}) {
+  // Track hover state for the row
+  const [isHovered, setIsHovered] = useState(false);
+  const [isFetchingGSC, setIsFetchingGSC] = useState(false);
+
+  return (
+    <>
+      <TableRow
+        className="group min-h-[40px]"
+        onClick={() => {
+          setExpandedRow(expandedRow === index ? null : index);
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        <TableCell className="font-medium text-center align-middle">
+          {indexOfFirstItem + index + 1}
+        </TableCell>
+
+        <TableCell className="align-middle">
+          <div className="flex items-center relative">
+            <Waypoints
+              onClick={(e) => {
+                e.stopPropagation();
+                handleIP(log.ip);
+              }}
+              title="برای بررسی IP کلیک کنید"
+              className="absolute mr-2 text-blue-400 dark:text-blue-300/50 hover:scale-110 cursor-pointer"
+              size={13}
+            />
+            {!showIp ? (
+              <p className="text-xs truncate ml-4">{log.ip}</p>
+            ) : (
+              <p className="text-xs text-gray-300 truncate ml-4">
+                {logIpMasking(log?.ip)}
+              </p>
+            )}
+          </div>
+        </TableCell>
+
+        <TableCell className="align-middle">
+          <Badge
+            variant="outline"
+            className={
+              log.method === "GET"
+                ? "bg-green-100 dark:bg-green-700 text-green-800 border-green-200"
+                : log.method === "POST"
+                  ? "bg-blue-100 dark:bg-blue-700 text-blue-800 border-blue-200"
+                  : log.method === "PUT"
+                    ? "bg-yellow-100 dark:bg-yellow-400 text-yellow-800 border-yellow-200"
+                    : "bg-red-100 dark:bg-red-700 text-red-800 border-red-200"
+            }
+          >
+            {log.method}
+          </Badge>
+        </TableCell>
+
+        <TableCell
+          className={`text-center ${log?.browser === "Chrome" ? "text-red-400" : ""}
+          ${log?.browser === "Firefox" ? "text-green-500" : ""}
+          ${log?.browser === "Safari" ? "text-blue-400" : ""}`}
+        >
+          {log?.browser}
+        </TableCell>
+
+        <TableCell className="align-middle">
+          {formatDate(log.timestamp)}
+        </TableCell>
+
+        <TableCell className="align-middle">
+          <Badge className={`${getStatusCodeColor(log.status)}`}>
+            {log.status}
+          </Badge>
+        </TableCell>
+
+        <TableCell className="max-w-[100%] truncate mr-2 align-middle">
+          {showReferer ? (
+            <section className="max-w-[99%] w-[750px] 3xl:w-[950px] truncate relative ml-2 flex items-center">
+              <span className="absolute">
+                <BadgeInfo
+                  onClick={(e) => handleCopyClick(log.referer, e, "Referer")}
+                  className="text-brand-bright mr-3"
+                  size={14}
+                />
+              </span>
+              <span className="ml-6">{log?.referer || "No referer"}</span>
+            </section>
+          ) : !showAgent ? (
+            <section className="max-w-[800px] truncate flex items-center relative">
+              <span
+                onClick={(e) => handleCopyClick(log.path, e, "URL PATH")}
+                className="absolute "
+              >
+                {getFileIcon(log.file_type)}
+              </span>
+              <span
+                onClick={(click) => handleURLClick(log.path, click)}
+                className="cursor-pointer hover:underline ml-5"
+              >
+                {showOnTables && domain
+                  ? "https://" + domain + log.path
+                  : log?.path}
+              </span>
+              <DangerIndicator path={log.path} />
+              {/* SHOW A KEY TO POP THE MODAL WITH THE KEYWORDS FROM GSC */}
+              {credentials?.token?.length > 0 && isHovered && (
+                <span className="active:scale-95 hover:scale-105 hover:text-red-500 transition-all duration-150">
+                  <div className="relative">
+                    {isFetchingGSC && (
+                      <div className="absolute inset-0 flex items-center justify-center ml-2">
+                        <div className="animate-spin rounded-full h-3 w-3 border border-yellow-500 border-t-transparent" />
+                      </div>
+                    )}
+                    <KeyRound
+                      size={14}
+                      className={`text-[10px] ml-2 cursor-pointer transition-opacity ${
+                        isFetchingGSC
+                          ? "opacity-30"
+                          : "text-yellow-500 hover:text-yellow-400"
+                      }`}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (isFetchingGSC) return; // Prevent multiple clicks
+
+                        setSelectedLog(log);
+                        setIsFetchingGSC(true);
+                        try {
+                          const response = await FetchMatchGSC(
+                            log.path,
+                            credentials,
+                            GSCdata,
+                          );
+                          setSelectedURLDetails(response);
+                        } finally {
+                          setIsFetchingGSC(false);
+                        }
+                      }}
+                    />
+                  </div>
+                </span>
+              )}
+            </section>
+          ) : (
+            <section className="max-w-[99%] w-[750px] 3xl:w-[950px] relative ml-2 flex items-center">
+              <span className="absolute">
+                <ImUserTie
+                  onClick={(e) =>
+                    handleCopyClick(log.user_agent, e, "User Agent")
+                  }
+                  className="text-brand-bright mr-1"
+                />{" "}
+              </span>
+              <span className="ml-5 break-all">{log?.user_agent}</span>
+            </section>
+          )}
+        </TableCell>
+
+        {/* RENDER THE ROW WITH THE POSITION DATA IF IT HAS BEEN TOGGLED */}
+        {ExcelLoaded && !showAgent && !showReferer && (
+          <TableCell className="text-center align-middle">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className={`border flex justify-center items-center rounded-full ml-2 w-8 h-5 text-[10px] cursor-default ${
+                    posColumn === "position"
+                      ? getPositionBadgeColor(log?.position)
+                      : "border-brand-bright/50"
+                  }`}
+                >
+                  {posColumn === "position"
+                    ? log?.position || "-"
+                    : posColumn === "clicks"
+                      ? log?.clicks || "-"
+                      : posColumn === "ctr"
+                        ? log?.ctr
+                          ? `${(log.ctr * 100).toFixed(0)}%`
+                          : "-"
+                        : log?.impressions || "-"}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="flex items-center space-x-2 p-1">
+                  <span className="text-xs">Pos:</span>
+                  <span className="font-bold">{log?.position || "-"}</span>
+                  <span className="border-r border-gray-300 h-3" />
+                  <span className="text-xs">کلیک‌ها:</span>
+                  <span className="font-bold">{log?.clicks || "-"}</span>
+                  <span className="border-r border-gray-300 h-3" />
+                  <span className="text-xs">Impr:</span>
+                  <span className="font-bold">{log?.impressions || "-"}</span>
+                  <span className="text-xs">CTR:</span>
+                  <span className="font-bold">
+                    {(log?.ctr?.toFixed(2) * 100).toFixed(0) + "%" || "-"}
+                  </span>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          </TableCell>
+        )}
+
+        <TableCell className="text-center align-middle">
+          <span className="border border-brand-bright/50 rounded-full  px-2 py-0.5 text-xs">
+            {log?.segment}
+          </span>
+        </TableCell>
+
+        <TableCell className="truncate align-middle">
+          <Badge className="pb-1" variant={"outline"}>
+            {log.file_type}
+          </Badge>
+        </TableCell>
+
+        {!showAgent && !showReferer && (
+          <TableCell className="align-middle">
+            {formatResponseSize(log.response_size)}
+          </TableCell>
+        )}
+
+        <TableCell className="align-middle">
+          <Badge
+            variant="outline"
+            className={
+              log.crawler_type !== "Human"
+                ? "bg-red-100 dark:bg-red-700 dark:text-white w-20 truncate overflow-hidden text-center justify-center text-[10px] px-10 h-5 pt-1 flex align-middle items-center"
+                : "bg-blue-100 truncate dark:bg-blue-500 dark:text-white overflow-hidden  text-blue-800 border-blue-200 flex items-center justify-center text-center w-20 text-[10px] h-5 pt-1"
+            }
+          >
+            {formatCrawlerType(log)}
+          </Badge>
+        </TableCell>
+      </TableRow>
+      {expandedRow === index && (
+        <TableRow>
+          <TableCell colSpan={12} className="bg-gray-50 dark:bg-gray-800 p-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {showReferer ? (
+                <>
+                  <div className="flex flex-col">
+                    <div className="flex space-x-2 items-center mb-2">
+                      <h4 className="font-bold">User Agent</h4>
+                      {log?.user_agent && (
+                        <CopyIcon
+                          className="cursor-pointer hover:scale-105 active:scale-95"
+                          onClick={(e) =>
+                            handleCopyClick(log?.user_agent, e, "User Agent")
+                          }
+                          size={12}
+                        />
+                      )}
+                    </div>
+                    <div className="p-3 bg-brand-bright/20 dark:bg-gray-700 rounded-md h-full">
+                      <p className="text-sm font-mono break-all">
+                        {log.user_agent}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col">
+                    <div className="flex space-x-2 items-center mb-2 justify-between">
+                      <div className="flex items-center space-x-1">
+                        <h4 className="font-bold">مسیر</h4>
+                        {log?.path && (
+                          <CopyIcon
+                            className="cursor-pointer hover:scale-105 active:scale-95"
+                            onClick={(e) =>
+                              handleCopyClick(log?.path, e, "URL / PATH")
+                            }
+                            size={12}
+                          />
+                        )}
+                      </div>
+                      <DangerIndicator path={log.path} />
+                    </div>
+                    <div className="p-3 bg-brand-bright/20 dark:bg-gray-700 rounded-md h-full">
+                      <p className="text-sm font-mono break-all">{log?.path}</p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-col max-w-5xl">
+                    <div className="flex mb-2 space-x-2 items-center justify-between">
+                      <div className="flex items-center space-x-1">
+                        <h4 className="font-bold">
+                          {showAgent ? "Path" : "User Agent"}
+                        </h4>
+                        {showAgent ? (
+                          <CopyIcon
+                            className="cursor-pointer hover:scale-105 active:scale-95"
+                            onClick={(e) =>
+                              handleCopyClick(log?.path, e, "URL / PATH")
+                            }
+                            size={12}
+                          />
+                        ) : (
+                          <CopyIcon
+                            className="cursor-pointer hover:scale-105 active:scale-95"
+                            onClick={(e) =>
+                              handleCopyClick(log?.user_agent, e, "User Agent")
+                            }
+                            size={12}
+                          />
+                        )}
+                      </div>
+                      {showAgent && <DangerIndicator path={log.path} />}
+                      {log.verified && (
+                        <div className="flex items-center space-x-1 bg-red-200 dark:bg-red-400 p-1 px-2 text-xs rounded-md">
+                          <BadgeCheck
+                            className="text-blue-700 pr-1"
+                            size={18}
+                          />
+                          {log?.crawler_type}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-3 bg-brand-bright/20 dark:bg-gray-700 rounded-md h-full">
+                      <p className="text-sm font-mono break-all">
+                        {showAgent ? log?.path : log.user_agent}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col">
+                    <div className="flex space-x-2 items-center mb-2">
+                      <h4 className="font-bold">Referer</h4>
+                      {log?.referer && (
+                        <CopyIcon
+                          className="cursor-pointer hover:scale-105 active:scale-95"
+                          onClick={(e) =>
+                            handleCopyClick(log?.referer, e, "Referer")
+                          }
+                          size={12}
+                        />
+                      )}
+                    </div>
+                    <div className="p-3 bg-brand-bright/20 dark:bg-gray-700 rounded-md h-full">
+                      <p className="text-sm break-all">
+                        {log.referer || (
+                          <span className="text-muted-foreground">
+                            بدون referer
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+});
+// Extracted PaginationControls component
+function PaginationControls({
+  currentPage,
+  totalPages,
+  setCurrentPage,
+  itemsPerPage,
+  setItemsPerPage,
+  totalCount,
+  entries,
+  formatedNumber,
+  tableIsFiltered,
+}) {
+  const indexOfFirstItem = (currentPage - 1) * itemsPerPage;
+  const indexOfLastItem = Math.min(currentPage * itemsPerPage, totalCount);
+
+  return (
+    <div
+      className="flex items-center justify-between w-full"
+      style={{ marginTop: "0.2em" }}
+    >
+      <div className="flex items-center -mt-2 ml-1 z-0">
+        <Select
+          value={itemsPerPage.toString()}
+          onValueChange={(value) => setItemsPerPage(Number(value))}
+        >
+          <SelectTrigger className="w-[70px] dark:text-white/50 text-xs h-6 mr-2 z-50">
+            <SelectValue placeholder="100" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="100">100</SelectItem>
+            <SelectItem value="500">500</SelectItem>
+            <SelectItem value="1000">1000</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Pagination className="text-xs">
+        <PaginationContent style={{ marginTop: "-10px" }}>
+          <PaginationItem>
+            <PaginationPrevious
+              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              className={
+                currentPage === 1
+                  ? "pointer-events-none opacity-50 text-xs"
+                  : "cursor-pointer text-xs"
+              }
+            />
+          </PaginationItem>
+
+          {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+            let pageNum = i + 1;
+
+            if (totalPages > 5) {
+              if (currentPage > 3 && currentPage <= totalPages - 2) {
+                pageNum = currentPage - 2 + i;
+              } else if (currentPage > totalPages - 2) {
+                pageNum = totalPages - 4 + i;
+              }
+            }
+
+            return (
+              <PaginationItem key={i}>
+                <PaginationLink
+                  className="cursor-pointer h-6 text-xs"
+                  onClick={() => setCurrentPage(pageNum)}
+                  isActive={currentPage === pageNum}
+                >
+                  {pageNum}
+                </PaginationLink>
+              </PaginationItem>
+            );
+          })}
+
+          {totalPages > 5 && currentPage < totalPages - 2 && (
+            <>
+              <PaginationItem className="text-xs">
+                <PaginationEllipsis />
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationLink
+                  className="cursor-pointer text-xs"
+                  onClick={() => setCurrentPage(totalPages)}
+                >
+                  {totalPages}
+                </PaginationLink>
+              </PaginationItem>
+            </>
+          )}
+
+          <PaginationItem className="cursor-pointer text-xs">
+            <PaginationNext
+              onClick={() =>
+                setCurrentPage(Math.min(totalPages, currentPage + 1))
+              }
+              className={
+                currentPage === totalPages
+                  ? "pointer-events-none opacity-50 text-xs"
+                  : "text-xs"
+              }
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+      <div className="flex items-center">
+        <span className="flex justify-end text-muted-foreground w-[280px] flex-nowrap dark:text-white/50 text-right pr-2.5 -mt-1.5 -ml-28 text-xs text-black/50">
+          {tableIsFiltered && (
+            <FaFilter className="text-red !important text-xs mr-1 pt-1" />
+          )}
+          {totalCount > 0 ? indexOfFirstItem + 1 : 0}-{indexOfLastItem} of{" "}
+          {formatedNumber(totalCount)} logs
+        </span>
+      </div>
+    </div>
+  );
+}

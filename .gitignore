@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+out/
+
+# rust build output
+src-tauri/target/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/.gradle/
+
+# local env / editor
+.env
+.env.*
+.DS_Store
+*.log
+
+# local crawl data / databases (never ship user data)
+*.db
+*.sqlite
+*.sqlite3
+
+# misc
+.turbo/
+tsconfig.tsbuildinfo

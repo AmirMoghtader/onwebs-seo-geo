@@ -1,0 +1,633 @@
+// @ts-nocheck
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  memo,
+} from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import debounce from "lodash/debounce";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu";
+import {
+  initialColumnWidths,
+  initialColumnAlignments,
+  headerTitles,
+  getRowValues,
+} from "./tableLayout";
+import {
+  useTableSort,
+  sortIndicator,
+  type SortState,
+} from "../../TablesContainer/components/useTableSort";
+import { TbColumns3 } from "react-icons/tb";
+import DownloadButton from "./DownloadButton.tsx";
+import useGlobalCrawlStore from "@/store/GlobalCrawlDataStore";
+import { save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { writeFile } from "@tauri-apps/plugin-fs";
+import { toast } from "sonner";
+
+interface TableCrawlProps {
+  rows: Array<{
+    url?: string;
+  }>;
+  rowHeight?: number;
+  overscan?: number;
+  tabName?: string;
+}
+
+interface TruncatedCellProps {
+  text: string;
+  maxLength?: number;
+  width?: string;
+}
+
+interface ResizableDividerProps {
+  onMouseDown: (e: React.MouseEvent) => void;
+}
+
+interface TableHeaderProps {
+  headers: string[];
+  columnWidths: string[];
+  columnAlignments: string[];
+  onResize: (index: number, e: React.MouseEvent) => void;
+  onAlignToggle: (index: number) => void;
+  onSort: (index: number) => void;
+  sort: SortState;
+  columnVisibility: boolean[];
+  calculatedIdWidth: string;
+}
+
+interface TableRowProps {
+  row: any;
+  index: number;
+  columnWidths: string[];
+  columnAlignments: string[];
+  columnVisibility: boolean[];
+  clickedCell: { row: number | null; cell: number | null };
+  handleCellClick: (
+    rowIndex: number,
+    cellIndex: number,
+    content: string,
+  ) => void;
+  onCellDoubleClick: (content: string) => void;
+  calculatedIdWidth: string;
+}
+
+interface ColumnPickerProps {
+  columnVisibility: boolean[];
+  setColumnVisibility: (visibility: any) => void;
+  headerTitles: string[];
+}
+
+const TruncatedCell = memo(
+  ({ text, maxLength = 1400, width = "100%" }: TruncatedCellProps) => {
+    const truncatedText = useMemo(() => {
+      if (!text) return "";
+      const s = text.toString();
+      return s.length > maxLength ? `${s.slice(0, maxLength)}...` : s;
+    }, [text, maxLength]);
+
+    return (
+      <div
+        style={{
+          width: "100%",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {truncatedText}
+      </div>
+    );
+  },
+);
+
+TruncatedCell.displayName = "TruncatedCell";
+
+const ResizableDivider = memo(({ onMouseDown }: ResizableDividerProps) => {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      style={{
+        position: "absolute",
+        right: 0,
+        top: 0,
+        bottom: 0,
+        width: "5px",
+        cursor: "col-resize",
+        zIndex: 1,
+      }}
+    />
+  );
+});
+
+ResizableDivider.displayName = "ResizableDivider";
+
+const TableHeader = memo(
+  ({
+    headers,
+    columnWidths,
+    columnAlignments,
+    onResize,
+    onAlignToggle,
+    onSort,
+    sort,
+    columnVisibility,
+    calculatedIdWidth,
+  }: TableHeaderProps) => {
+    const visibleItems = useMemo(() => {
+      return headers
+        .map((header, index) => ({
+          header,
+          width: index === 0 ? calculatedIdWidth : columnWidths[index],
+          alignment: columnAlignments[index],
+          visible: columnVisibility[index],
+          originalIndex: index,
+        }))
+        .filter((item) => item.visible);
+    }, [
+      headers,
+      columnWidths,
+      columnAlignments,
+      columnVisibility,
+      calculatedIdWidth,
+    ]);
+
+    return (
+      <div
+        className="domainCrawl border-b bg-white dark:bg-brand-darker"
+        style={{
+          display: "grid",
+          gridTemplateColumns: visibleItems
+            .map((item) => (item.originalIndex === 1 ? "1fr" : item.width))
+            .join(" "),
+          height: "30px",
+          alignItems: "center",
+          fontSize: "12px",
+          width: "100%",
+        }}
+      >
+        {visibleItems.map((item) => (
+          <div
+            key={item.header}
+            style={{
+              position: "relative",
+              padding: "8px",
+              userSelect: "none",
+              justifyContent:
+                item.alignment === "center"
+                  ? "center"
+                  : item.alignment === "right"
+                    ? "flex-end"
+                    : "flex-start",
+              height: "30px",
+              display: "flex",
+              alignItems: "center",
+              fontWeight: "bold",
+              cursor: "pointer",
+            }}
+            onClick={() => onSort(item.originalIndex)}
+            onDoubleClick={(e) => {
+              // Alignment used to own the single click; sorting needs it, so
+              // alignment moved to double-click.
+              e.stopPropagation();
+              onAlignToggle(item.originalIndex);
+            }}
+            title="کلیک: مرتب‌سازی (نزولی → صعودی → بدون مرتب‌سازی) — دوبار کلیک: تغییر چیدمان ستون"
+            className="dark:text-white/50 dark:bg-brand-darker text-black/50 dark:border-brand-dark  bg-white shadow dark:border"
+          >
+            {item.header}
+            <span
+              style={{
+                marginInlineStart: 4,
+                fontSize: 10,
+                color: "var(--brand-bright, #2B6CC4)",
+              }}
+            >
+              {sortIndicator(sort, item.originalIndex)}
+            </span>
+            <ResizableDivider
+              onMouseDown={(e) => onResize(item.originalIndex, e)}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  },
+);
+
+TableHeader.displayName = "TableHeader";
+
+const TableRow = memo(
+  ({
+    row,
+    index,
+    columnWidths,
+    columnAlignments,
+    columnVisibility,
+    clickedCell,
+    handleCellClick,
+    onCellDoubleClick,
+    calculatedIdWidth,
+  }: TableRowProps) => {
+    // Shared with the sort comparator via tableLayout.getRowValues so the
+    // cells and the ordering can never disagree about a column's value.
+    const rowData = useMemo(() => getRowValues(row, index), [row, index]);
+
+    const visibleItems = useMemo(() => {
+      return rowData
+        .map((cell, i) => ({
+          cell,
+          width: i === 0 ? calculatedIdWidth : columnWidths[i],
+          alignment: columnAlignments[i],
+          visible: columnVisibility[i],
+          originalIndex: i,
+        }))
+        .filter((item) => item.visible);
+    }, [
+      rowData,
+      columnWidths,
+      columnAlignments,
+      columnVisibility,
+      calculatedIdWidth,
+    ]);
+
+    const isRowClicked = clickedCell.row === index;
+
+    return (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: visibleItems
+            .map((item) => (item.originalIndex === 1 ? "1fr" : item.width))
+            .join(" "),
+          height: "100%",
+          alignItems: "center",
+          color: isRowClicked ? "white" : "inherit",
+          width: "100%",
+        }}
+        className="dark:text-white/50 cursor-pointer not-selectable hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+      >
+        {visibleItems.map((item) => (
+          <div
+            key={`cell-${index}-${item.originalIndex}`}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              onCellDoubleClick(item.cell?.toString() || "");
+            }}
+            onClick={() =>
+              handleCellClick(
+                index,
+                item.originalIndex,
+                item.cell?.toString() || "",
+              )
+            }
+            style={{
+              padding: "8px",
+              justifyContent:
+                item.alignment === "center"
+                  ? "center"
+                  : item.alignment === "right"
+                    ? "flex-end"
+                    : "flex-start",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+            }}
+            className={`dark:text-white text-xs dark:border dark:border-brand-dark border ${
+              isRowClicked
+                ? "bg-blue-600"
+                : index % 2 === 0
+                  ? "bg-white dark:bg-brand-darker"
+                  : "bg-gray-50 dark:bg-brand-dark/30"
+            }`}
+          >
+            <TruncatedCell text={item.cell?.toString()} width="100%" />
+          </div>
+        ))}
+      </div>
+    );
+  },
+);
+
+TableRow.displayName = "TableRow";
+
+const ColumnPicker = memo(
+  ({
+    columnVisibility,
+    setColumnVisibility,
+    headerTitles,
+  }: ColumnPickerProps) => {
+    const handleToggle = useCallback(
+      (indexValue) => {
+        setColumnVisibility((prev) => {
+          const newVisibility = [...prev];
+          newVisibility[indexValue] = !newVisibility[indexValue];
+          return newVisibility;
+        });
+      },
+      [setColumnVisibility],
+    );
+
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <div className="border dark:border-white/20 w-8 flex justify-center items-center rounded h-6 cursor-pointer hover:bg-gray-100 dark:hover:bg-brand-dark">
+            <TbColumns3 className="w-5 h-5 dark:text-white/50 p-1" />
+          </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-32 bg-white dark:bg-brand-darker border dark:border-brand-dark rounded shadow-lg z-20">
+          {headerTitles.map((header, index) => (
+            <DropdownMenuCheckboxItem
+              key={header}
+              checked={columnVisibility[index] ?? true}
+              onCheckedChange={() => handleToggle(index)}
+              className="p-2 hover:bg-gray-100 w-full dark:hover:bg-brand-dark space-x-6 dark:text-white text-brand-bright"
+            >
+              <span className="ml-5 dark:text-brand-bright">{header}</span>
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  },
+);
+
+ColumnPicker.displayName = "ColumnPicker";
+
+const TableCrawlCSS = ({
+  rows,
+  rowHeight = 25,
+  overscan = 5,
+  tabName,
+}: TableCrawlProps) => {
+  const [columnAlignments, setColumnAlignments] = useState(
+    initialColumnAlignments,
+  );
+  const [isResizing, setIsResizing] = useState<number | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [columnVisibility, setColumnVisibility] = useState(
+    headerTitles.map(() => true),
+  );
+  const [clickedCell, setClickedCell] = useState<{
+    row: number | null;
+    cell: number | null;
+  }>({
+    row: null,
+    cell: null,
+  });
+
+    const isGeneratingExcel = useGlobalCrawlStore((state) => state.isGeneratingExcel);
+  const setIsGeneratingExcel = useGlobalCrawlStore((state) => state.setIsGeneratingExcel);
+  const startXRef = useRef(0);
+
+  const calculatedIdWidth = useMemo(() => {
+    const maxId = rows.length;
+    const maxDigits = maxId.toString().length;
+    const charWidth = 8;
+    return `${Math.max(30, maxDigits * charWidth + 16)}px`;
+  }, [rows.length]);
+
+  const [columnWidths, setColumnWidths] = useState(initialColumnWidths);
+
+  const handleDownload = useCallback(async () => {
+    if (!rows.length) {
+      toast.error("داده‌ای برای دانلود وجود ندارد");
+      return;
+    }
+    setIsGeneratingExcel(true);
+    try {
+      const fileBuffer = await invoke("create_css_excel", { data: rows });
+      setIsGeneratingExcel(false);
+      const filePath = await save({
+        filters: [{ name: "Excel File", extensions: ["xlsx"] }],
+        defaultPath: `Onwebs SEO & GEO-${tabName}.xlsx`,
+      });
+      if (filePath) {
+        await writeFile(filePath, new Uint8Array(fileBuffer));
+        toast.success("فایل Excel با موفقیت ذخیره شد!");
+      }
+    } catch (error) {
+      console.error("Error generating Excel file:", error);
+    } finally {
+      setIsGeneratingExcel(false);
+    }
+  }, [rows, tabName, setIsGeneratingExcel]);
+
+  const handleCellClick = useCallback(
+    (rowIndex: number, cellIndex: number, content: string) => {
+      setClickedCell((prev) => {
+        if (prev.row === rowIndex && prev.cell === cellIndex)
+          return { row: null, cell: null };
+        return { row: rowIndex, cell: cellIndex };
+      });
+    },
+    [],
+  );
+
+  const handleCellDoubleClick = useCallback((content: string) => {
+    if (!content) return;
+    navigator.clipboard.writeText(content).then(() => {
+      toast.success("سلول در کلیپ‌بورد کپی شد", {
+        description: content.length > 50 ? `${content.slice(0, 50)}...` : content,
+        position: "bottom-right",
+      });
+    });
+  }, []);
+
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const filteredRows = useMemo(() => {
+    if (!rows || !Array.isArray(rows)) return [];
+    if (!searchTerm) return rows;
+    const s = searchTerm.toLowerCase();
+    return rows.filter((row) => {
+      return Object.values(row).some((val) =>
+        val?.toString().toLowerCase().includes(s),
+      );
+    });
+  }, [rows, searchTerm]);
+
+  const { sortedRows, sort, toggleSort } = useTableSort(
+    filteredRows,
+    getRowValues,
+  );
+
+  const rowVirtualizer = useVirtualizer({
+    count: sortedRows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => rowHeight,
+    overscan,
+  });
+
+  const debouncedSearch = useMemo(
+    () => debounce((value: string) => setSearchTerm(value), 300),
+    [],
+  );
+
+  useEffect(() => {
+    return () => debouncedSearch.cancel();
+  }, [debouncedSearch]);
+
+  const handleMouseDown = useCallback(
+    (indexValue: number, event: React.MouseEvent) => {
+      setIsResizing(indexValue);
+      startXRef.current = event.clientX;
+      event.preventDefault();
+    },
+    [],
+  );
+
+  const handleMouseMove = useCallback(
+    (event: MouseEvent) => {
+      if (isResizing === null) return;
+      const delta = event.clientX - startXRef.current;
+      setColumnWidths((prevWidths) => {
+        const newWidths = [...prevWidths];
+        const currentWidth = parseInt(newWidths[isResizing]);
+        newWidths[isResizing] = `${Math.max(50, currentWidth + delta)}px`;
+        return newWidths;
+      });
+      startXRef.current = event.clientX;
+    },
+    [isResizing],
+  );
+
+  const handleMouseUp = useCallback(() => {
+    setIsResizing(null);
+  }, []);
+
+  useEffect(() => {
+    if (isResizing !== null) {
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+      return () => {
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+      };
+    }
+  }, [isResizing, handleMouseMove, handleMouseUp]);
+
+  const totalWidth = useMemo(
+    () =>
+      columnWidths.reduce((acc, width, index) => {
+        const w = index === 0 ? parseInt(calculatedIdWidth) : parseInt(width);
+        return acc + (isNaN(w) ? 0 : w);
+      }, 0),
+    [columnWidths, calculatedIdWidth],
+  );
+
+  const toggleColumnAlignment = useCallback((indexValue: number) => {
+    setColumnAlignments((prev) => {
+      const newAlignments = [...prev];
+      newAlignments[indexValue] =
+        newAlignments[indexValue] === "center" ? "left" : "center";
+      return newAlignments;
+    });
+  }, []);
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  return (
+    <div className="flex flex-col h-full w-full min-h-0 relative">
+      <div className="text-xs dark:bg-brand-darker sticky top-0 flex gap-1 not-selectable z-20 pb-1 ">
+        <input
+          type="text"
+          placeholder="جستجو..."
+          onChange={(e) => debouncedSearch(e.target.value)}
+          className="w-full p-1 pl-2 h-6 bg-white dark:bg-brand-darker border dark:border-brand-dark dark:text-white rounded-r outline-none focus:border-blue-500"
+        />
+        <DownloadButton
+          download={handleDownload}
+          loading={isGeneratingExcel}
+          setLoading={setIsGeneratingExcel}
+        />
+        <div className="mr-1.5">
+          <ColumnPicker
+            columnVisibility={columnVisibility}
+            setColumnVisibility={setColumnVisibility}
+            headerTitles={headerTitles}
+          />
+        </div>
+        <div className="h-[5px] border-b dark:border-b-brand-dark  bg-white dark:bg-brand-darker w-full absolute -bottom-[0] -mb-1 z-50" />
+      </div>
+      <div
+        ref={parentRef}
+        className="w-full flex-1 min-h-0 overflow-auto relative not-selectable"
+      >
+        <div
+          style={{
+            width: "100%",
+            position: "relative",
+          }}
+        >
+          <div className="sticky top-0 z-10" style={{ width: "100%" }}>
+            <TableHeader
+              headers={headerTitles}
+              columnWidths={columnWidths}
+              columnAlignments={columnAlignments}
+              onResize={handleMouseDown}
+              onAlignToggle={toggleColumnAlignment}
+              onSort={toggleSort}
+              sort={sort}
+              columnVisibility={columnVisibility}
+              calculatedIdWidth={calculatedIdWidth}
+            />
+          </div>
+
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              position: "relative",
+              minWidth: `${totalWidth}px`,
+            }}
+            className="domainCrawlParent"
+          >
+            {sortedRows.length > 0 ? (
+              virtualRows.map((virtualRow) => (
+                <div
+                  key={virtualRow.key}
+                  style={{
+                    position: "absolute",
+                    top: `${virtualRow.start}px`,
+                    left: 0,
+                    width: "100%",
+                    height: `${virtualRow.size}px`,
+                  }}
+                >
+                  <TableRow
+                    row={sortedRows[virtualRow.index]}
+                    index={virtualRow.index}
+                    columnWidths={columnWidths}
+                    columnAlignments={columnAlignments}
+                    columnVisibility={columnVisibility}
+                    clickedCell={clickedCell}
+                    handleCellClick={handleCellClick}
+                    onCellDoubleClick={handleCellDoubleClick}
+                    calculatedIdWidth={calculatedIdWidth}
+                  />
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-4 text-xs text-gray-500">
+                داده‌ای موجود نیست.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default memo(TableCrawlCSS);

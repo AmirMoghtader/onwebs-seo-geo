@@ -1,0 +1,1266 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* IRANSansX — bundled locally in public/fonts, so the app never reaches out to
+   a font CDN. Latin glyphs fall back to the system stack, which keeps English
+   technical terms (SEO, URL, LCP…) looking native alongside the Persian text. */
+@font-face {
+  font-family: "IRANSansX";
+  src: url("/fonts/IRANSansX-Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IRANSansX";
+  src: url("/fonts/IRANSansX-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IRANSansX";
+  src: url("/fonts/IRANSansX-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* No 600/700 file ships with the app, so map the heavier weights onto Medium
+   rather than letting the browser synthesise a smeared faux-bold. */
+@font-face {
+  font-family: "IRANSansX";
+  src: url("/fonts/IRANSansX-Medium.ttf") format("truetype");
+  font-weight: 600 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Text reads right-to-left, but the app's structure does NOT mirror: the
+   sidebar stays on the right, and menu/tab/column order is unchanged. That is
+   why `direction` stays ltr on the root (flex/grid order and the virtualised
+   table geometry all depend on it) and rightward alignment is applied to text
+   containers instead. */
+html,
+body {
+  direction: ltr;
+}
+
+/* Default text alignment is rightward. `unicode-bidi: plaintext` makes each
+   paragraph pick its own direction from its first strong character, so Persian
+   sentences read RTL while a bare Latin technical term (URL, Status Code, LCP)
+   still renders correctly instead of having its punctuation flipped. */
+body :where(p, span, h1, h2, h3, h4, h5, h6, label, li, td, th, dt, dd, figcaption, blockquote) {
+  text-align: right;
+  unicode-bidi: plaintext;
+}
+
+/* Inputs and editable fields follow the same rule. */
+body :where(input, textarea, select) {
+  text-align: right;
+  unicode-bidi: plaintext;
+}
+
+/* ...except anything holding a URL. A URL is always Latin, so right-aligning
+   it just pushes it away from the cursor and bidi can reorder its punctuation.
+   Covers the crawl address bar, search-by-URL boxes and any url/email input. */
+body :where(input[type="url"], input[type="email"]),
+body input[placeholder*="URL"],
+body input[placeholder*="url"],
+body input[placeholder*="http"],
+body :where(.url-input, [data-url-input]) {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: isolate;
+}
+
+/* Anything explicitly aligned by a utility class must keep winning, otherwise
+   centred numbers in stat tiles and left-aligned code blocks would break. */
+body :where(.text-left) { text-align: left !important; }
+body :where(.text-center) { text-align: center !important; }
+body :where(.text-right) { text-align: right !important; }
+
+/* Diagnostic widget cards pin their big glyph with `absolute right-N` and used
+   to let the left-aligned title sit beside it. Once titles became right-aligned
+   the two landed on top of each other, so the glyph moves to the left edge —
+   which is also the icon-left / text-right arrangement asked for. The small
+   bottom-corner info button is left where it is. */
+.widget > span.absolute:not([class*="bottom-"]) {
+  right: auto !important;
+  left: 1.25rem !important;
+}
+
+/* Controls that pair a leading icon with a label must stay LTR internally,
+   otherwise the Persian label makes the whole line RTL and throws the icon
+   over to the right-hand side. The label inside still reads right-to-left;
+   only the icon/text ORDER is pinned. */
+body :where(button, [role="tab"], [role="menuitem"], a.nav-item, .mantine-Tabs-tab) {
+  direction: ltr;
+}
+
+/* ...and their inner text nodes must NOT re-derive their own direction. The
+   blanket `unicode-bidi: plaintext` above makes any span starting with a
+   Persian letter an RTL paragraph, which threw the leading icon to the end of
+   the line. Pinning these back to normal keeps the icon first while the
+   Persian run itself still renders right-to-left, as bidi intends. */
+body
+  :where(button, [role="tab"], [role="menuitem"], a.nav-item, .mantine-Tabs-tab)
+  :where(span, p, div, label) {
+  unicode-bidi: normal;
+  direction: ltr;
+  text-align: inherit;
+}
+
+/* Code, URLs and monospace data stay LTR — a URL or a status code reversed by
+   bidi is unreadable. */
+body :where(code, pre, kbd, samp, .font-mono, [class*="font-mono"]) {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
+
+/* Persian/Arabic letters must stay joined. Tailwind's tracking-* utilities add
+   letter-spacing, which splits a word like "کراول‌شده" into loose glyphs and
+   makes it unreadable, so they are neutralised app-wide now that the UI is
+   Persian. Latin technical terms lose nothing meaningful from this. */
+[class*="tracking-"] {
+  letter-spacing: normal !important;
+}
+
+/* The overview tiles used 9-10px uppercase labels, which is legible for Latin
+   but far too small for Persian glyphs — they render as grey mush. Lift the
+   floor and drop the (meaningless for Persian) uppercasing. */
+.text-\[9px\],
+.text-\[10px\],
+.text-\[10\.5px\] {
+  font-size: 11.5px !important;
+}
+
+.uppercase {
+  text-transform: none !important;
+}
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 224, 224, 224;
+  --background-end-rgb: 255, 255, 255;
+  --color-status-200: #4299e1;
+  /* Light Blue for success */
+  --color-status-301: #2b8cbe;
+  /* Medium Blue for redirection */
+  --color-status-404: #3182bd;
+  /* Dark Blue for client error */
+  --color-status-500: #2a78b8;
+  /* Darker Blue for server error */
+  /* Add more status codes as needed */
+}
+
+body {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+.not-selectable,
+button,
+[role="button"] {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Re-enable selection inside virtualized table bodies. Their scroll
+   containers carry .not-selectable (to keep drag-resize clean), but
+   the actual row content lives in .domainCrawlParent and must remain
+   copyable. */
+.domainCrawlParent,
+.domainCrawlParent *,
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+.not-selectable {
+  -webkit-user-select: none;
+  /* Safari */
+  -moz-user-select: none;
+  /* Firefox */
+  -ms-user-select: none;
+  /* IE/Edge */
+  user-select: none;
+  /* Standard syntax */
+}
+
+h1 {
+  font-size: 1rem !important;
+}
+
+h2 {
+  font-size: 0.9rem;
+}
+
+h3 {
+  font-size: 0.9rem !important;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.crawl-item {
+  opacity: 0;
+  animation:
+    fadeIn 0.01s ease-in forwards,
+    fadeIn 0.1s ease-in forwards;
+}
+
+input:focus {
+  outline: none;
+  box-shadow: none;
+  /* Removes any box-shadow if present */
+}
+
+/* Tables Styles */
+
+.table_container {
+  @apply bg-white border dark:border-brand-darker dark:bg-brand-darker dark:text-white shadow rounded-md h-[30rem] overflow-hidden p-0.5 !important;
+
+  div {
+    @apply dark:text-white dark:bg-brand-darker mt-0 bg-white !important;
+  }
+
+  h2 {
+    @apply dark:text-white text-black/50 font-semibold text-sm;
+    margin-left: 0.5em;
+    margin-bottom: 0.6em;
+    text-align: left;
+  }
+
+  p {
+    @apply dark:text-white !important;
+  }
+}
+
+table:not(.issues) {
+  @apply dark:bg-brand-darker dark:text-white border-0 !important;
+  border-collapse: collapse;
+  width: 100%;
+  background-color: white;
+}
+
+thead {
+  @apply z-20 overflow-clip border-none border-b-2 dark:bg-brand-darker dark:text-white/20 !important;
+}
+
+tbody {
+  @apply bg-white dark:bg-brand-darker dark:text-white border-0 !important;
+}
+
+th:not(.issues) {
+  @apply pb-2 dark:bg-brand-darker dark:text-white/30 bg-white border-0 pl-3.5 text-black/50 !important;
+  padding: 4px 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: black;
+}
+
+tr {
+  @apply dark:border-white/20 !important;
+  /* padding: 20px 0; */
+  vertical-align: initial;
+  z-index: 0;
+}
+
+td {
+  padding: 2px 0;
+  vertical-align: initial;
+  @apply text-sm dark:border-brand-dark !important;
+  z-index: 0;
+  font-size: 0.8rem !important;
+}
+
+table:not(.issues),
+tbody:not(.issues)
+  > tr:not(.issues):nth-child(odd)
+  tbody:not(.issues)
+  > tr:not(.issues):nth-child(odd) {
+  background: #0001;
+  @apply dark:bg-brand-dark/20;
+}
+
+table:is(.issues),
+tbody:is(.issues) {
+  @apply bg-transparent !important;
+}
+
+pre:not([class*="robots"]):not([class*="schema"]) {
+  @apply dark:bg-stone-900 bg-gray-200/50 dark:text-white/50 border-0 text-slate-800 !important;
+  overflow: scroll;
+  padding: 6px;
+  height: 34.4rem !important;
+  font-size: 0.8rem !important;
+}
+
+/* DRAWER */
+.mantine-Drawer-root,
+.mantine-Drawer-inner,
+.mantine-Drawer-content {
+  margin: 2.5rem 0 36px 0.1rem;
+  overflow: hidden !important;
+  padding: 0 !important;
+  z-index: 9999999 !important;
+  /* height: calc(90vh - 36px) !important; */
+}
+
+.mantine-Drawer-content {
+  @apply h-[calc(100%-45px)] !important;
+}
+
+.tabs-list {
+  @apply dark:bg-transparent dark:text-white !important;
+}
+
+.tabs-list button .mantine-Tabs-tabLabel {
+  @apply dark:text-white !important;
+}
+
+.mantine-Drawer-body,
+.mantine-Drawer-header {
+  padding: 0 !important;
+  @apply dark:bg-brand-darker !important;
+  padding: 0 !important;
+}
+
+.mantine-Drawer-header button {
+  @apply mr-2 mb-2 pb-1 dark:text-white dark:hover:bg-brand-bright;
+}
+
+.todoItems {
+  height: calc(85vh - 10px);
+  overflow: unset;
+  padding-right: 10px;
+}
+
+.naked_table {
+  @apply dark:border-brand-darker bg-white p-1 dark:bg-brand-darker shadow rounded-md h-[30rem] overflow-hidden border;
+
+  h2 {
+    @apply p-4 font-semibold text-sm dark:text-white text-black/50;
+  }
+
+  pre:not([class*="robots"]):not([class*="schema"]) {
+    @apply dark:text-white/50 border-0 !important;
+    overflow: scroll;
+    height: 86% !important;
+    overflow-x: hidden;
+  }
+}
+
+/*CHARTS COLOURS  */
+
+/* Sapphire */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 44%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --chart-1: 221.2 83.2% 53.3%;
+    --chart-2: 212 95% 68%;
+    --chart-3: 216 92% 60%;
+    --chart-4: 210 98% 78%;
+    --chart-5: 212 97% 87%;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 221.2 83.2% 53.3%;
+    --chart-1: 221.2 83.2% 53.3%;
+    --chart-2: 212 95% 68%;
+    --chart-3: 216 92% 60%;
+    --chart-4: 210 98% 78%;
+    --chart-5: 212 97% 87%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+.keyword-chart svg {
+  min-width: 650px !important;
+  margin-left: -200px !important;
+  padding: 0 !important;
+}
+
+.line_chart {
+  .recharts-wrapper svg {
+    min-width: 150px !important;
+    margin-left: 0px !important;
+    padding: 0 !important;
+  }
+}
+
+/* TODO: Don't remember why I added this */
+/* THIS WAS CAUSING THE PPC TO AVE STRANGE STYLING */
+/* button:where([data-active]) { */
+/*   border-color: var(--tabs-color); */
+/*   @apply dark:bg-white !important; */
+/* } */
+/**/
+/* CHARTS COLOURS END */
+
+/* TABS COLOURS */
+
+.m_576c9d4::before {
+  @apply dark:hidden !important;
+}
+
+.m_539e827b {
+  @apply dark:bg-transparent !important;
+}
+
+.m_539e827b span {
+  @apply text-black dark:text-brand-normal text-xs h-3 !important;
+}
+
+.m_539e827b:not([data-active]) {
+  @apply text-gray-400 !important;
+}
+
+.m_539e827b:where([data-active]) {
+  @apply text-black dark:text-brand-highlight dark:bg-transparent !important;
+}
+
+.m_539e827b:hover {
+  @apply dark:text-black dark:border-0 !important;
+}
+
+/* TABS FONTS */
+
+.tabs-drawer button span {
+  @apply dark:text-brand-darker !important;
+}
+
+/*WIDGETS*/
+
+.widget {
+  @apply border w-full sm:w-[13rem] xl:w-full dark:bg-brand-darker dark:border-brand-darker h-[7.8em] !important;
+}
+
+.widget > div > h2:first-of-type {
+  @apply text-sky-dark !important;
+}
+
+.widget > div > h2:last-of-type {
+  @apply dark:text-brand-background/50 text-gray-500 font-semibold;
+}
+
+.widget div span:first-of-type {
+  @apply dark:text-sky-500 text-gray-500 !important;
+}
+
+.widget button svg:last-of-type {
+  @apply dark:text-white/50 text-black/50;
+}
+
+/*TIMES*/
+
+.widget div span:last-of-type {
+  @apply text-brand-normal dark:text-sky-500 text-sky-500;
+}
+
+.widget div span:first-child {
+  @apply text-base sm:text-lg lg:text-xl !important;
+}
+
+.widget span svg {
+  @apply text-brand-highlight;
+}
+
+.widget div > svg {
+  @apply text-brand-highlight;
+}
+
+/*SVG HOVER BUTTON*/
+.widget button {
+  @apply dark:text-brand-normal/60;
+}
+
+.widget div span:last-of-type {
+  @apply dark:text-brand-background/60;
+}
+
+/* Custom Select Element */
+.custom-select {
+  @apply text-black bg-white dark:bg-[#171717] dark:text-white;
+}
+
+/* Selected Option */
+.custom-select-selected {
+  flex: 1;
+}
+
+/* Custom Arrow */
+.custom-select::after {
+  content: "▼";
+  position: absolute;
+  right: 10px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* Options Container */
+.custom-select-options {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 100%;
+  background-color: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+}
+
+/* Individual Options */
+.custom-select-option {
+  padding: 8px 12px;
+  cursor: pointer;
+  color: #333;
+}
+
+.custom-select-option:hover {
+  background-color: #f0f0f0;
+}
+
+/* Show options when select is active */
+.custom-select.active .custom-select-options {
+  display: block;
+}
+
+/*CRAWL HISTORY TABLE*/
+.table_history {
+  /* height: 100%; */
+  border-collapse: collapse;
+  border-spacing: 0 10px;
+  width: 100%;
+  text-align: center;
+
+  thead {
+    th {
+      padding: 10px;
+      font-weight: 800;
+    }
+  }
+
+  td {
+    padding: 5px;
+  }
+}
+
+/* Style the entire scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  /* Width of the scrollbar */
+  height: 5px;
+  /* Height of the horizontal scrollbar */
+  z-index: -10 !important;
+  background: transparent;
+}
+
+/* STYLE THE SCHEMA SCROLLBAR */
+::-webkit-scrollbar-thumb {
+  @apply dark:bg-gray-800 rounded-none bg-brand-dark/20 active:bg-brand-darker !important;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-brand-highlight dark:bg-sky-500 z-0 !important;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/*Cards animations*/
+
+/* styles.css or global.css */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+    /* Slightly move from below */
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/*---------------- LOADER ANIMATION ----------------*/
+/* HTML: <div class="loader"></div> */
+.loader {
+  width: 20px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #000;
+  box-shadow: 0 0 0 0 #0004;
+  animation: l2 1.5s infinite linear;
+  position: relative;
+}
+
+.loader:before,
+.loader:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 0 #0004;
+  animation: inherit;
+  animation-delay: -0.5s;
+}
+
+.loader:after {
+  animation-delay: -1s;
+}
+
+@keyframes l2 {
+  100% {
+    box-shadow: 0 0 0 40px #0000;
+  }
+}
+
+/*TABLES SCROLLBAR */
+/* Webkit browsers (Chrome, Safari) */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  overflow: auto;
+  background: trasnparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply dark:bg-gray-800 rounded-none bg-brand-dark/20 active:bg-brand-darker !important;
+}
+
+.ranking-table td {
+  @apply text-[10px] !important;
+}
+
+.ranking-table table thead tr th {
+  @apply bg-red-500;
+}
+
+/* VERTICAL SIDE SCROLL BAR STYLING */
+.side-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-blue-500 dark:bg-sky-600 z-0 !important;
+}
+
+.side-scrollbar::-webkit-scrollbar-thumb:hover {
+  @apply bg-sky-500 dark:bg-sky-500 z-0 !important;
+}
+
+/* SIDEBAR TABS */
+.sidebar-tabs span {
+  @apply text-xs !important;
+}
+
+/* Mantine Modal Styling */
+.mantine-Paper-root,
+.mantine-Modal-header {
+  @apply dark:bg-brand-darker border dark:border-blue-900/60;
+}
+
+.mantine-ScrollArea-viewport {
+  @apply dark:bg-brand-darker dark:border-white/20;
+}
+
+.mantine-Select-option {
+  @apply dark:bg-brand-darker dark:border-white/20 hover:dark:bg-brand-bright;
+}
+
+.mantine-Modal-header {
+  @apply border-b-0 border-r-0 border-l-0;
+}
+
+.mantine-ScrollArea-viewport {
+  @apply dark:bg-brand-darker dark:border-white/20;
+}
+
+.mantine-Select-option {
+  @apply dark:bg-brand-darker dark:border-white/20 hover:dark:bg-brand-bright;
+}
+
+.mantine-Modal-close,
+.mantine-Modal-title {
+  @apply dark:text-white dark:hover:bg-brand-dark;
+}
+
+.mantine-Modal-title {
+  @apply pl-4 !important;
+}
+
+.mantine-Input-input {
+  @apply dark:bg-transparent dark:border-white/20;
+}
+
+.mantine-MultiSelect-option,
+.mantine-Popover-dropdown {
+  @apply dark:bg-brand-darker text-white dark:border-white/20;
+}
+
+.mantine-MultiSelect-option {
+  @apply dark:hover:bg-brand-bright;
+}
+
+.mantine-Input-input:is(.dark *) {
+  @apply dark:text-white;
+}
+
+/* GSC MODAL STYLING */
+select:focus {
+  /* Styles when the select box is focused */
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 5px rgba(0, 123, 255, 0.5);
+}
+
+select,
+#range {
+  appearance: none;
+  /* Remove default styling */
+  -webkit-appearance: none;
+  /* For Safari */
+  -moz-appearance: none;
+  /* For Firefox */
+  padding-right: 30px;
+  /* Adjust for the icon */
+  @apply dark:border-white/30;
+}
+
+select option {
+  /* Styling the options in the dropdown */
+  appearance: none;
+  /* Remove default styling */
+  -webkit-appearance: none;
+  /* For Safari */
+  -moz-appearance: none;
+  /* For Firefox */
+}
+
+/* LOADER ANIMATION */
+/* HTML: <div class="loader"/></div> */
+.loader {
+  width: 20px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  @apply dark:bg-white;
+  box-shadow: 0 0 0 0 #0004;
+  animation: l2 1.5s infinite linear;
+  position: relative;
+}
+
+.loader:before,
+.loader:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 0 #0004;
+  animation: inherit;
+  animation-delay: -0.5s;
+}
+
+.loader:after {
+  animation-delay: -1s;
+}
+
+@keyframes l2 {
+  100% {
+    box-shadow: 0 0 0 40px #0000;
+  }
+}
+
+/*MANTINE POPOVER*/
+.mantine-Popover-dropdown {
+  @apply text-black dark:text-white;
+}
+
+/* TECHNICAL CHART COLOIURS */
+#chart-buttons button {
+  @apply dark:text-white dark:bg-brand-darker text-black !important;
+}
+
+.topics-scrollbar::-webkit-scrollbar-thumb {
+  @apply text-red-500 dark:bg-brand-bright border-none border-0 hidden !important;
+}
+
+.topics-scrollbar::-webkit-scrollbar-track {
+  @apply dark:bg-brand-dark border-none border-0 !important;
+}
+
+/* TABLE DROPDOWN MENU */
+#table-dropdown {
+  @apply dark:bg-brand-darker dark:text-white bg-white !important;
+}
+
+#table-dropdown button {
+  @apply dark:text-white dark:bg-brand-darker dark:border-brand-normal/20 dark:hover:bg-brand-bright dark:hover:text-white;
+}
+
+#table-dropdown button:hover {
+  @apply dark:bg-brand-bright dark:text-white;
+}
+
+#table-dropdown button:focus {
+  @apply dark:bg-brand-bright dark:text-white;
+}
+
+#table-dropdown button:active {
+  @apply dark:bg-brand-bright dark:text-white;
+}
+
+/* Technical table colours */
+#chart-buttons button[data-active="true"] {
+  @apply dark:bg-blue-500/10 !important;
+}
+
+/* MANTINE TABS */
+button .mantine-Tabs-tabLabel {
+  @apply text-[11px] !important;
+}
+
+/* MANTINE MULTI SELECT */
+.mantine-MultiSelect-option {
+  @apply text-black dark:text-white;
+}
+
+/* REACT SELECT ON SERP CRAWL */
+
+.select__input-container {
+  @apply dark:bg-brand-darker dark:text-white border-0 ring-0 outline-0 !important;
+}
+
+.select__control {
+  @apply dark:bg-brand-darker dark:text-white;
+}
+
+.select__multi-value {
+  @apply dark:bg-brand-bright dark:text-white ring-0 border-0 !important;
+}
+
+.select__multi-value__label::after {
+  @apply hidden !important;
+}
+
+.select__multi-value__label {
+  @apply dark:text-white !important;
+}
+
+.select__menu,
+.select__control--menu-is-open,
+.select__menu-list {
+  @apply dark:bg-brand-darker dark:text-white !important;
+}
+
+.css-d7l1ni-option {
+  @apply dark:bg-brand-darker dark:text-white !important;
+}
+
+.css-13cymwt-control {
+  @apply dark:border-brand-dark !important;
+}
+
+/* HEADINGS TABLE */
+.headings_table {
+  @apply dark:bg-brand-darker dark:text-white border-0 !important;
+  border-collapse: collapse !important;
+  width: 100%;
+  background-color: white !important;
+}
+
+.headings_table thead tr th {
+  @apply bg-white bg-opacity-50 dark:bg-brand-darker dark:bg-opacity-50 !important;
+}
+
+.headings_table tbody tr td {
+  @apply border-2 !important;
+  border-collapse: collapse;
+}
+
+/* CHANGE THE CODE ELEMENT FOR AI SCHEMA */
+.aiSchema section div pre {
+  @apply h-[42.4rem] dark:border-brand-dark rounded-md !important;
+}
+
+/* CRAWL DOMAIN TABLE */
+.domainCrawlParent table thead th {
+  @apply border-b dark:border-white/20 shadow py-[3px] pl-[4px] !important;
+}
+
+.domainCrawlParent tr td {
+  @apply px-[5px] py-[2px] border !important;
+}
+
+.domainCrawlParent tbody {
+  @apply dark:border-white/20 !important;
+}
+
+/* GLOBAL OVERVIEW CHART */
+.chart tspan {
+  @apply hidden;
+}
+
+/* ROBOTS DOMAIN TABLE */
+div:is(.robotsDomain) {
+  pre {
+    @apply bg-transparent dark:bg-gray-900 dark:text-white !important;
+    height: 100% !important;
+    padding-bottom: 5rem !important;
+    /* Account for app footer */
+    overflow: auto !important;
+  }
+}
+
+/* SITEMAP DOMAIN TABLE */
+div:is(.sitemapsDomain) {
+  pre {
+    @apply bg-transparent dark:bg-gray-900 dark:text-white h-[26rem] !important;
+  }
+}
+
+.crawlSchema pre {
+  @apply h-[20rem] overflow-auto !important;
+}
+
+/* IMAGES SUB TABLE */
+.imagesSubTable table td {
+  /* all: unset !important; */
+  background: transparent !important;
+}
+
+/* MANTINE TABS  */
+
+.m_539e827b:is(.dark *) {
+  @apply h-3 py-3;
+}
+
+.m_539e827b:where([data-active]):is(.dark *) {
+  @apply dark:bg-brand-bright h-2 !important;
+}
+
+.m_539e827b {
+  @apply h-5 pb-3 pt-3 dark:hover:border-brand-bright hover:border-b-[0px];
+}
+
+/* SETS THE TABS BACKGROUND */
+.m_539e827b:is([data-active]) {
+  @apply h-3 bg-brand-bright rounded-t-lg hover:border-b-2 !important;
+}
+
+/* SETS THE TABS TEXT */
+.m_539e827b:is([data-active]) span {
+  @apply h-3 text-white !important;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.sticky {
+  position: -webkit-sticky;
+  /* For Safari */
+  position: sticky;
+  top: 0;
+}
+
+th {
+  background-color: #f87171;
+  /* Ensure the background color matches the header */
+  z-index: 1;
+}
+
+/* DIALOG STYLING */
+dialog {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* TABLE ROWS COLOURS */
+.domainCrawlParent tbody {
+  @apply dark:border-white/20 !important;
+}
+
+.domainCrawlParent tbody tr:nth-child(odd) {
+  @apply bg-gray-50 dark:bg-brand-dark/10 border !important;
+}
+
+.domainCrawlParent tbody tr:nth-child(even) {
+  @apply bg-white dark:bg-brand-darker border !important;
+}
+
+/* BLINKING TEXT */
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+/* RECHARTS FIX */
+.recharts-area-curve[data-key="human"] {
+  stroke: hsl(var(--primary)) !important;
+}
+
+.recharts-area-curve[data-key="crawler"] {
+  stroke: red !important;
+}
+
+/* FILE UPLOAD */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.pulse {
+  animation: pulse 2s infinite;
+}
+
+tr:is(.dark *) {
+  @apply border-b-brand-dark/50 !important;
+}
+
+tbody tr {
+  max-height: 28px !important;
+  height: 1px !important;
+}
+
+/* NATIVE BUTTON  */
+.native-button {
+  @apply px-4 py-1.5 bg-brand-bright text-white dark:bg-[#2d2d2d] border border-[#adadad] dark:border-[#4a4a4a] rounded-sm dark:text-[#e6e6e6] text-xs font-sans shadow-sm active:bg-brand-bright/90 dark:active:bg-[#424242] active:border-[#7e7e7e] dark:active:border-[#5a5a5a] active:shadow-none focus:outline-none focus:ring-1 focus:ring-[#0078d7] transition-all duration-75 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+/*THIS CHANGES THE ROBOTS ELEMENT FONT SIZE*/
+code {
+  @apply text-[9px];
+}
+
+/* TABLE ROW ALIGN AT THE TOP */
+.align-middle {
+  vertical-align: start !important;
+}
+
+/* PROCESSING BAR ANIMATION */
+@keyframes processing-bar-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+
+/* ── English mode ─────────────────────────────────────────────────────────
+   Everything the Persian pass introduced is reverted here rather than being
+   made conditional at each rule, so the two modes cannot drift: this block is
+   the exact inverse of the block above it. */
+html.lang-en body :where(p, span, h1, h2, h3, h4, h5, h6, label, li, td, th, dt, dd, figcaption, blockquote),
+html.lang-en body :where(input, textarea, select) {
+  text-align: left;
+  unicode-bidi: normal;
+}
+
+html.lang-en body :where(.text-right) { text-align: right !important; }
+html.lang-en body :where(.text-center) { text-align: center !important; }
+html.lang-en body :where(.text-left) { text-align: left !important; }
+
+/* Latin needs its letter-spacing and uppercase back — those rules existed
+   only because they break Arabic-script joining. */
+html.lang-en [class*="tracking-"] { letter-spacing: revert !important; }
+html.lang-en .uppercase { text-transform: uppercase !important; }
+html.lang-en .text-\[9px\] { font-size: 9px !important; }
+html.lang-en .text-\[10px\] { font-size: 10px !important; }
+html.lang-en .text-\[10\.5px\] { font-size: 10.5px !important; }
+
+/* The widget glyph goes back to the right-hand corner it was designed for. */
+html.lang-en .widget > span.absolute:not([class*="bottom-"]) {
+  left: auto !important;
+  right: 1.25rem !important;
+}
+
+/* Rows that were flipped to icon-right read left-to-right again. */
+html.lang-en .flex-row-reverse {
+  flex-direction: row !important;
+}
+html.lang-en .space-x-reverse {
+  --tw-space-x-reverse: 0 !important;
+}
+
+/* System font first: IRANSansX renders Latin, but not as well as the stack
+   the rest of macOS uses. */
+html.lang-en body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+    Arial, sans-serif;
+}
+
+
+/* ── Scrollable tab strips ────────────────────────────────────────────────
+   The Internal / Page Titles / Meta Description / H1 … row and the URL
+   Details / Inlinks / Outlinks … row both hold more tabs than fit, and a
+   tab you cannot reach may as well not exist. A trackpad swipes these
+   horizontally; the wheel handler in TablesContainer covers a plain mouse. */
+.tab-strip {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+  /* Room for the scrollbar so it never sits on top of a tab label. */
+  padding-bottom: 2px;
+}
+
+.tab-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.tab-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tab-strip::-webkit-scrollbar-thumb {
+  background: rgba(43, 108, 196, 0.25);
+  border-radius: 2px;
+}
+
+.tab-strip:hover::-webkit-scrollbar-thumb {
+  background: rgba(43, 108, 196, 0.45);
+}
+
+.tab-strip > * {
+  flex: 0 0 auto;
+}
+
+
+/* Mantine's Tabs.List is a grid by default and wraps when it runs out of
+   room, which is what stacked the right pane's tabs onto a second row and
+   pushed them over the panel underneath. Marked with .tab-strip it scrolls
+   instead, like the table tab strips. */
+.tab-strip.mantine-Tabs-list {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.tab-strip .mantine-Tabs-tab {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Shallow-crawler widgets: 14 tiles, 7 per row in exactly two rows. Every
+   tile hard-codes w-60/xl:w-52, so the width override has to win here; the
+   zoom shrinks the whole tile (paddings, icons, numbers) uniformly instead
+   of restyling 14 near-identical components one by one. */
+.widgets .widget {
+  width: 100% !important;
+  zoom: 0.78;
+}

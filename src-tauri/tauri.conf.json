@@ -1,0 +1,71 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3000"
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "© Onwebs",
+    "targets": "all",
+    "externalBin": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "longDescription": "Onwebs SEO & GEO — personal SEO crawler and analysis toolkit.",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "resources": [],
+    "shortDescription": "Onwebs SEO & GEO",
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  },
+  "productName": "Onwebs SEO & GEO",
+  "mainBinaryName": "OnwebsSEO",
+  "version": "0.1.0",
+  "identifier": "com.onwebs.seogeo",
+  "plugins": {},
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "maximizable": true,
+        "center": true,
+        "title": "Onwebs SEO & GEO",
+        "minWidth": 900,
+        "minHeight": 600,
+        "width": 1360,
+        "height": 840,
+        "decorations": true,
+        "useHttpsScheme": false,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost https://generativelanguage.googleapis.com https://www.googleapis.com https://searchconsole.googleapis.com https://oauth2.googleapis.com https://accounts.google.com http://localhost:11434 http://127.0.0.1:11434; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    }
+  }
+}
