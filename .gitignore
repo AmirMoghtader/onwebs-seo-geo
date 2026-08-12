@@ -35,4 +35,5 @@ SCREAMING_FROG_IMPLEMENTATION_PROMPT_FA.md
 # no markdown files in the public repo — except the Persian README,
 # which is the repo's public face on GitHub
 *.md
+!README.md
 !README.fa.md
