@@ -2,7 +2,7 @@
 
 <img src="public/icon.png" alt="Onwebs SEO & GEO" width="96" />
 
-# آنوبز سئو و جئو — Onwebs SEO & GEO
+# Onwebs SEO & GEO — سئو و جئوی آن‌وبز
 
 **کامل‌ترین ابزار سئو رایگان — جایگزین کامل و متن‌باز Screaming Frog، به‌علاوه امکانات GEO (سئوی موتورهای هوش مصنوعی) که Screaming Frog ندارد.**
 

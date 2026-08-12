@@ -19,7 +19,7 @@ First release of **Onwebs SEO & GEO**, forked from RustySEO 0.4.0 (GPL-3.0).
 - New **Speed** section in settings with one-click profiles: Polite / Balanced / Fast
 
 ### Branding & UI
-- Renamed to Onwebs SEO & GEO with the Anubis mark (app icon, favicon, splash)
+- Renamed to Onwebs SEO & GEO with the Onwebs mark (app icon, favicon, splash)
 - Full Persian localisation (RTL text, LTR structure, technical terms in English); English mode fixed
 - Native macOS menu bar (File/View/Configuration/Export/Tools/Help) with crawl shortcuts ⌘↩ / ⌘P / ⌘.
 - In-app menubar and changelog popup removed; top bar pinned to the window edge
