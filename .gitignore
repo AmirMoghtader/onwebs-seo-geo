@@ -31,3 +31,6 @@ TODO.md
 feature.md
 SCREAMING_FROG_GAP_ANALYSIS_FA.md
 SCREAMING_FROG_IMPLEMENTATION_PROMPT_FA.md
+
+# no markdown files in the public repo
+*.md
