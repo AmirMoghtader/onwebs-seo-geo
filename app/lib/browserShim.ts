@@ -14,6 +14,8 @@
 if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
   const pending = () => new Promise(() => {});
   (window as any).__TAURI_INTERNALS__ = {
+    // marks this object as the stand-in, so pages can tell browser from app
+    __shim: true,
     invoke: (cmd: string) => {
       console.warn("[browser] tauri invoke skipped:", cmd);
       return pending();

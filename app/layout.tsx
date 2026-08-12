@@ -67,9 +67,18 @@ export default function RootLayout({
   }, []);
 
   return (
-    <html lang="en" className="min-w-[600px]" suppressHydrationWarning>
+    <html
+      lang="en"
+      // The desktop shell needs a floor width; on the phone (/m) that floor
+      // would force a horizontal scrollbar, and the page must scroll
+      // vertically instead of being clipped.
+      className={isMobileShell ? "" : "min-w-[600px]"}
+      suppressHydrationWarning
+    >
       <body
-        className={`relative overflow-hidden rounded-md bg-gray-100 dark:bg-brand-darker/95 font-sans`}
+        className={`relative rounded-md bg-gray-100 dark:bg-brand-darker/95 font-sans ${
+          isMobileShell ? "overflow-y-auto overflow-x-hidden" : "overflow-hidden"
+        }`}
         suppressHydrationWarning
       >
         <MantineProvider
@@ -85,21 +94,32 @@ export default function RootLayout({
           <LanguageProvider>
           {/* ChatBar removed: it was a public community chat room backed by a
               third-party Supabase project. */}
-          {/* Real-height spacer for the fixed 44px top bar (+2px gap). A
-              margin here collapses through empty blocks, and WebKit/Chromium
-              disagree on how far that travels — a div with height doesn't. */}
-          <div className="h-[46px]">
-            <TopMenuBar />
-          </div>
-          {/* Menus live in the system menu bar now; this routes their clicks. */}
-          <NativeMenuBridge />
-          <UrlStatusChecker />
-          <main className="rounded-md">
+          {/* The phone shell (/m) is a single full-screen page: no top bar,
+              no footer, no desktop chrome. */}
+          {!isMobileShell && (
+            <>
+              {/* Real-height spacer for the fixed 44px top bar (+2px gap). A
+                  margin here collapses through empty blocks, and
+                  WebKit/Chromium disagree on how far that travels — a div
+                  with height doesn't. */}
+              <div className="h-[46px]">
+                <TopMenuBar />
+              </div>
+              {/* Menus live in the system menu bar now; this routes their clicks. */}
+              <NativeMenuBridge />
+              <UrlStatusChecker />
+            </>
+          )}
+          <main className={isMobileShell ? "" : "rounded-md"}>
             {children}
             {pathname === "/ppc" ? "" : <Toaster />}
           </main>
-          <Footer />
-          <Loader />
+          {!isMobileShell && (
+            <>
+              <Footer />
+              <Loader />
+            </>
+          )}
           </LanguageProvider>
         </MantineProvider>
       </body>

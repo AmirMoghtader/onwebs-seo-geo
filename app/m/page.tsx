@@ -3,7 +3,7 @@
 // The Android build's entire UI: one search box, one score, one issue list.
 // It talks to the same Rust crawler commands as the desktop deep crawler but
 // keeps its own tiny state — none of the desktop's 73-column machinery.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
@@ -18,17 +18,21 @@ type Issue = {
   title: string;
   count: number;
   severity: "critical" | "warning" | "notice";
+  why: string;
   fix: string;
+  urls: string[];
 };
+
+// How many affected URLs each issue card keeps for the expandable list. The
+// count stays exact; only the list is capped so a 50k-page crawl can't blow
+// up the phone's memory.
+const URL_CAP = 80;
 
 // One place that turns raw crawler pages into the mobile verdict. Weights are
 // per-affected-page ratios so a 10-page site and a 10k-page site score alike.
 function analyse(pages: any[]): { score: number; issues: Issue[] } {
   const total = pages.length || 1;
   const issues: Issue[] = [];
-  const add = (key, title, count, severity, fix) => {
-    if (count > 0) issues.push({ key, title, count, severity, fix });
-  };
 
   const status = (p) => Number(p?.status_code) || 0;
   const title = (p) => p?.title?.[0]?.title || "";
@@ -36,47 +40,68 @@ function analyse(pages: any[]): { score: number; issues: Issue[] } {
   const h1 = (p) => p?.headings?.h1?.[0] || "";
   const words = (p) => Number(p?.word_count) || 0;
   const indexable = (p) => (p?.indexability?.indexability ?? 1) >= 0.5;
+  const urlOf = (p) => p?.url || "";
 
-  const broken = pages.filter((p) => status(p) >= 400).length;
-  add("broken", "صفحات خراب (4xx/5xx)", broken, "critical",
-    "لینک‌های شکسته را اصلاح یا به مقصد درست ریدایرکت 301 کنید.");
+  const add = (key, title, matched, severity, why, fix) => {
+    if (matched.length > 0)
+      issues.push({
+        key, title, severity, why, fix,
+        count: matched.length,
+        urls: matched.map(urlOf).filter(Boolean).slice(0, URL_CAP),
+      });
+  };
 
-  const noTitle = pages.filter((p) => status(p) < 300 && !title(p)).length;
-  add("noTitle", "صفحه بدون تایتل", noTitle, "critical",
-    "برای هر صفحه یک تگ <title> یکتا و توصیفی بنویسید.");
+  add("broken", "صفحات خراب (4xx/5xx)",
+    pages.filter((p) => status(p) >= 400), "critical",
+    "کاربر و ربات گوگل هر دو به بن‌بست می‌خورند؛ اعتبار لینک‌ها هدر می‌رود، بودجه‌ی کراول تلف می‌شود و تجربه‌ی کاربری و رتبه آسیب می‌بیند.",
+    "لینک‌های داخلی به این آدرس‌ها را اصلاح کنید؛ اگر صفحه جای دیگری رفته، ریدایرکت 301 به مقصد درست بدهید و اگر واقعاً حذف شده، از لینک‌دهی به آن دست بردارید.");
 
-  const seen = new Map();
-  for (const p of pages) { const t = title(p); if (t) seen.set(t, (seen.get(t) || 0) + 1); }
-  const dupTitles = [...seen.values()].filter((n) => n > 1).reduce((a, n) => a + n, 0);
-  add("dupTitle", "تایتل تکراری", dupTitles, "warning",
-    "تایتل هر صفحه باید یکتا باشد — صفحات هم‌تایتل را بازنویسی کنید.");
+  add("noTitle", "صفحه بدون تایتل",
+    pages.filter((p) => status(p) < 300 && !title(p)), "critical",
+    "تایتل مهم‌ترین سیگنال موضوع صفحه برای گوگل و اولین چیزی است که در نتایج دیده می‌شود؛ بدون آن گوگل خودش چیزی می‌سازد و CTR سقوط می‌کند.",
+    "برای هر صفحه یک تگ <title> یکتا و توصیفی (حدود ۵۰ تا ۶۰ کاراکتر) بنویسید که کلیدواژه‌ی اصلی اول آن باشد.");
 
-  const longTitle = pages.filter((p) => title(p).length > 60).length;
-  add("longTitle", "تایتل بلندتر از ۶۰ کاراکتر", longTitle, "notice",
-    "تایتل‌های بلند در نتایج گوگل بریده می‌شوند — زیر ۶۰ کاراکتر نگه دارید.");
+  {
+    const seen = new Map();
+    for (const p of pages) { const t = title(p); if (t) seen.set(t, (seen.get(t) || 0) + 1); }
+    add("dupTitle", "تایتل تکراری",
+      pages.filter((p) => title(p) && seen.get(title(p)) > 1), "warning",
+      "وقتی چند صفحه یک تایتل دارند، گوگل نمی‌داند کدام را برای کوئری نشان دهد؛ صفحات با هم رقابت می‌کنند (کانیبالیزیشن) و هیچ‌کدام خوب رتبه نمی‌گیرند.",
+      "هر صفحه باید تایتل مخصوص خودش را داشته باشد؛ اگر دو صفحه واقعاً یک موضوع‌اند، یکی را canonical یا ادغام کنید.");
+  }
 
-  const noDesc = pages.filter((p) => status(p) < 300 && !desc(p)).length;
-  add("noDesc", "صفحه بدون توضیحات متا", noDesc, "warning",
-    "برای هر صفحه یک meta description جذاب ۷۰ تا ۱۶۰ کاراکتری بنویسید.");
+  add("longTitle", "تایتل بلندتر از ۶۰ کاراکتر",
+    pages.filter((p) => title(p).length > 60), "notice",
+    "گوگل حدود ۶۰۰ پیکسل اول تایتل را نمایش می‌دهد؛ باقی‌اش بریده می‌شود و پیام صفحه ناقص به کاربر می‌رسد.",
+    "تایتل را زیر ۶۰ کاراکتر نگه دارید و مهم‌ترین کلمات را ابتدای آن بیاورید.");
 
-  const noH1 = pages.filter((p) => status(p) < 300 && !h1(p)).length;
-  add("noH1", "صفحه بدون H1", noH1, "warning",
-    "هر صفحه دقیقاً یک H1 داشته باشد که موضوع اصلی را بگوید.");
+  add("noDesc", "صفحه بدون توضیحات متا",
+    pages.filter((p) => status(p) < 300 && !desc(p)), "warning",
+    "بدون meta description گوگل یک تکه‌ی تصادفی از متن صفحه را نشان می‌دهد؛ اسنیپت غیرجذاب یعنی کلیک کمتر، حتی با رتبه‌ی خوب.",
+    "برای هر صفحه توضیح ۷۰ تا ۱۶۰ کاراکتری بنویسید که مزیت صفحه را بگوید و به کلیک دعوت کند.");
 
-  const nonIndex = pages.filter((p) => status(p) < 300 && !indexable(p)).length;
-  add("nonIndex", "صفحه غیرقابل ایندکس", nonIndex, "warning",
-    "اگر این صفحات باید در گوگل باشند، noindex/robots را بردارید.");
+  add("noH1", "صفحه بدون H1",
+    pages.filter((p) => status(p) < 300 && !h1(p)), "warning",
+    "H1 ساختار محتوایی صفحه را به گوگل و اسکرین‌ریدرها می‌گوید؛ نبودش درک موضوع صفحه را سخت‌تر می‌کند.",
+    "هر صفحه دقیقاً یک H1 داشته باشد که موضوع اصلی را روشن بگوید (می‌تواند با تایتل فرق کند).");
 
-  const thin = pages.filter((p) => status(p) < 300 && words(p) > 0 && words(p) < 300).length;
-  add("thin", "محتوای کم (زیر ۳۰۰ کلمه)", thin, "notice",
-    "صفحات کم‌محتوا را ادغام کنید یا محتوای واقعی و مفید اضافه کنید.");
+  add("nonIndex", "صفحه غیرقابل ایندکس",
+    pages.filter((p) => status(p) < 300 && !indexable(p)), "warning",
+    "این صفحات با noindex یا robots از ایندکس گوگل بیرون‌اند؛ اگر عمدی نباشد یعنی محتوایتان اصلاً در نتایج ظاهر نمی‌شود.",
+    "اگر صفحه باید در گوگل باشد تگ noindex یا قانون robots را بردارید؛ اگر عمدی است، لینک‌دهی داخلی به آن را کم کنید.");
 
-  const redirects = pages.filter((p) => status(p) >= 300 && status(p) < 400).length;
-  add("redirects", "ریدایرکت داخلی", redirects, "notice",
-    "لینک‌های داخلی را مستقیم به مقصد نهایی بزنید، نه به ریدایرکت.");
+  add("thin", "محتوای کم (زیر ۳۰۰ کلمه)",
+    pages.filter((p) => status(p) < 300 && words(p) > 0 && words(p) < 300), "notice",
+    "صفحات کم‌محتوا به‌سختی برای کوئری‌ها رقابت می‌کنند و در حجم زیاد، کیفیت کل سایت را از نظر گوگل پایین می‌آورند.",
+    "یا محتوای واقعی و مفید اضافه کنید، یا چند صفحه‌ی کم‌محتوای هم‌موضوع را در یک صفحه‌ی کامل ادغام و ریدایرکت کنید.");
+
+  add("redirects", "ریدایرکت داخلی",
+    pages.filter((p) => status(p) >= 300 && status(p) < 400), "notice",
+    "هر پرش ریدایرکت زمان بارگذاری اضافه می‌کند و بخشی از اعتبار لینک در طول زنجیره از دست می‌رود.",
+    "لینک‌های داخلی را مستقیم به آدرس نهایی بزنید تا کاربر و ربات از ریدایرکت رد نشوند.");
 
   // Score: start at 100, subtract per-issue penalties scaled by how much of
-  // the site each issue touches. Critical hits 3× harder than notices.
+  // the site each issue touches. Critical hits ~4× harder than notices.
   const weight = { critical: 45, warning: 25, notice: 10 };
   let penalty = 0;
   for (const i of issues) penalty += weight[i.severity] * Math.min(1, i.count / total);
@@ -106,6 +131,7 @@ export default function MobilePage() {
   const [count, setCount] = useState(0);
   const pagesRef = useRef<any[]>([]);
   const [result, setResult] = useState<{ score: number; issues: Issue[] } | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
 
   // Collect raw crawl batches straight off the event bus; the heavy Zustand
   // store and its table pipelines never load on mobile.
@@ -132,7 +158,50 @@ export default function MobilePage() {
     pagesRef.current = [];
     setCount(0);
     setResult(null);
+    setOpenKey(null);
     setPhase("crawling");
+
+    // Browser-preview demo only: outside Tauri there is no crawler, so with
+    // ?demo in the URL we animate a sample verdict instead. Inside the real
+    // app __TAURI_INTERNALS__ is genuine (no __shim) and this never runs.
+    const internals = (window as any).__TAURI_INTERNALS__;
+    const inRealApp = internals && !internals.__shim;
+    if (!inRealApp && new URLSearchParams(location.search).has("demo")) {
+      let n = 0;
+      const t = setInterval(() => { n += Math.ceil(Math.random() * 9); setCount(n); }, 120);
+      setTimeout(() => {
+        clearInterval(t);
+        setCount(137);
+        const base = domain.replace(/\/$/, "");
+        const mk = (u, status, title, desc, h1, words, ix = 1) => ({
+          url: `${base}${u}`,
+          status_code: status, title: [{ title }], description: desc,
+          headings: { h1: h1 ? [h1] : [] }, word_count: words,
+          indexability: { indexability: ix },
+        });
+        const pages = [
+          ...Array.from({ length: 112 }, (_, i) => mk(`/blog/post-${i}`, 200, `مقاله ${i}`, "توضیح", "عنوان", 700)),
+          mk("/services/old-page", 404, "", "", "", 0),
+          mk("/product/legacy-13", 404, "", "", "", 0),
+          mk("/tag/قدیمی", 404, "", "", "", 0),
+          mk("/wp-content/broken.css", 404, "", "", "", 0),
+          mk("/fa/contact-old", 404, "", "", "", 0),
+          mk("/api/feed", 500, "", "", "", 0),
+          mk("/portfolio/a", 200, "نمونه‌کار", "", "عنوان", 500),
+          mk("/portfolio/b", 200, "نمونه‌کار", "", "عنوان", 480),
+          mk("/portfolio/c", 200, "نمونه‌کار", "", "عنوان", 450),
+          mk("/about", 200, "درباره‌ی ما — آژانس دیجیتال مارکتینگ آن‌وبز و خدمات سئو", "توضیح", "عنوان", 900),
+          mk("/faq", 200, "سوالات متداول", "", "", 380),
+          mk("/landing/off", 200, "لندینگ", "توضیح", "عنوان", 120, 0),
+          mk("/news/1", 200, "خبر اول", "توضیح", "عنوان", 150),
+          mk("/news/2", 200, "خبر دوم", "توضیح", "عنوان", 90),
+        ];
+        setResult(analyse(pages));
+        setPhase("done");
+      }, 2600);
+      return;
+    }
+
     try {
       await invoke("domain_crawl_command", { domain });
       // crawl_complete usually fires first; this is the fallback.
@@ -176,18 +245,18 @@ export default function MobilePage() {
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && phase !== "crawling" && start()}
             placeholder="example.com"
-            className="flex-1 px-4 py-4 text-[15px] outline-none bg-transparent text-left"
+            className="flex-1 min-w-0 px-4 py-4 text-[15px] outline-none bg-transparent text-left"
             style={{ color: NAVY_DEEP }}
           />
           <button
             onClick={start}
             disabled={phase === "crawling" || !url.trim()}
-            className="px-6 font-bold text-white text-sm disabled:opacity-50"
+            className="px-6 shrink-0 font-bold text-white text-sm disabled:opacity-50"
             style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
             {phase === "crawling" ? "..." : "تحلیل"}
           </button>
         </div>
-        <p className="text-center text-[11px] mt-3" style={{ color: "#64748B" }}>
+        <p className="text-center text-[11px] mt-3 leading-5" style={{ color: "#64748B" }}>
           آدرس سایتت را بزن تا کامل کراول و نمره‌گذاری شود — رایگان و روی خود گوشی
         </p>
       </div>
@@ -247,31 +316,96 @@ export default function MobilePage() {
               )}
               {result.issues.map((issue, i) => {
                 const sv = SEV[issue.severity];
+                const open = openKey === issue.key;
                 return (
                   <motion.div key={issue.key}
                     initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.15 + i * 0.06 }}
-                    className="rounded-2xl bg-white p-4"
+                    transition={{ delay: 0.15 + i * 0.05 }}
+                    className="rounded-2xl bg-white overflow-hidden"
                     style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[13px] font-bold" style={{ color: NAVY_DEEP }}>
-                        {issue.title}
-                      </span>
-                      <span className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                          style={{ background: sv.bg, color: sv.fg }}>{sv.label}</span>
-                        <span className="text-sm font-extrabold tabular-nums" style={{ color: sv.fg }}>
-                          {issue.count.toLocaleString("fa-IR")}
+
+                    {/* Card header — tap to expand */}
+                    <button
+                      onClick={() => setOpenKey(open ? null : issue.key)}
+                      className="w-full text-right p-4 active:bg-slate-50">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 min-w-0">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            className={`shrink-0 transition-transform duration-200 ${open ? "rotate-90" : ""}`}
+                            style={{ color: "#94A3B8" }}>
+                            <path d="M9 6l-6 6 6 6" stroke="currentColor" strokeWidth="2.4"
+                              strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          <span className="text-[13px] font-bold truncate" style={{ color: NAVY_DEEP }}>
+                            {issue.title}
+                          </span>
                         </span>
-                      </span>
-                    </div>
-                    <p className="text-[11.5px] leading-5" style={{ color: "#64748B" }}>{issue.fix}</p>
+                        <span className="flex items-center gap-2 shrink-0 mr-2">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                            style={{ background: sv.bg, color: sv.fg }}>{sv.label}</span>
+                          <span className="text-sm font-extrabold tabular-nums" style={{ color: sv.fg }}>
+                            {issue.count.toLocaleString("fa-IR")}
+                          </span>
+                        </span>
+                      </div>
+                    </button>
+
+                    {/* Expanded body: why + fix + affected URLs */}
+                    <AnimatePresence initial={false}>
+                      {open && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.22, ease: "easeOut" }}>
+                          <div className="px-4 pb-4 space-y-3">
+                            <div className="rounded-xl p-3" style={{ background: "#F8FAFC" }}>
+                              <div className="text-[11px] font-bold mb-1" style={{ color: sv.fg }}>
+                                چه مشکلی ایجاد می‌کند؟
+                              </div>
+                              <p className="text-[11.5px] leading-5" style={{ color: "#475569" }}>
+                                {issue.why}
+                              </p>
+                            </div>
+                            <div className="rounded-xl p-3" style={{ background: "#F0FDF4" }}>
+                              <div className="text-[11px] font-bold mb-1" style={{ color: "#16A34A" }}>
+                                راه‌حل
+                              </div>
+                              <p className="text-[11.5px] leading-5" style={{ color: "#475569" }}>
+                                {issue.fix}
+                              </p>
+                            </div>
+                            {issue.urls.length > 0 && (
+                              <div>
+                                <div className="text-[11px] font-bold mb-1.5" style={{ color: NAVY_DEEP }}>
+                                  آدرس‌های درگیر
+                                  {issue.count > issue.urls.length &&
+                                    ` (${issue.urls.length.toLocaleString("fa-IR")} از ${issue.count.toLocaleString("fa-IR")})`}
+                                </div>
+                                <div dir="ltr"
+                                  className="rounded-xl border border-slate-100 divide-y divide-slate-50 max-h-52 overflow-y-auto">
+                                  {issue.urls.map((u) => (
+                                    <div key={u}
+                                      onClick={() => navigator.clipboard?.writeText(u)}
+                                      className="px-3 py-2 text-[10.5px] font-mono truncate text-left active:bg-slate-50"
+                                      style={{ color: ACCENT }}
+                                      title="لمس کن تا کپی شود">
+                                      {u}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </motion.div>
                 );
               })}
             </div>
 
-            <button onClick={() => { setPhase("idle"); setResult(null); setUrl(""); }}
+            <button onClick={() => { setPhase("idle"); setResult(null); setUrl(""); setOpenKey(null); }}
               className="w-full mt-6 py-3.5 rounded-2xl text-sm font-bold text-white"
               style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
               تحلیل سایت دیگر
