@@ -133,6 +133,36 @@ export default function MobilePage() {
   const [result, setResult] = useState<{ score: number; issues: Issue[] } | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
 
+  // IMDb-style bottom bar: history / search (center, default) / profile.
+  const [tab, setTab] = useState<"history" | "search" | "profile">("search");
+  const [history, setHistory] = useState<any[]>([]);
+  const [profile, setProfile] = useState<{ name: string; email: string } | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formEmail, setFormEmail] = useState("");
+
+  useEffect(() => {
+    try { setHistory(JSON.parse(localStorage.getItem("onwebs.m.history") || "[]")); } catch {}
+    try { const p = JSON.parse(localStorage.getItem("onwebs.m.profile") || "null"); if (p) setProfile(p); } catch {}
+  }, []);
+
+  // Every finished analysis lands in local history (device-only storage).
+  const saveToHistory = (domain: string, res, pages: number) => {
+    const entry = {
+      id: Date.now(),
+      domain: domain.replace(/^https?:\/\//, ""),
+      date: new Date().toISOString(),
+      pages,
+      score: res.score,
+      issueCount: res.issues.reduce((a, i) => a + i.count, 0),
+      result: res,
+    };
+    setHistory((prev) => {
+      const next = [entry, ...prev].slice(0, 30);
+      try { localStorage.setItem("onwebs.m.history", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
   // Collect raw crawl batches straight off the event bus; the heavy Zustand
   // store and its table pipelines never load on mobile.
   useEffect(() => {
@@ -196,8 +226,10 @@ export default function MobilePage() {
           mk("/news/1", 200, "خبر اول", "توضیح", "عنوان", 150),
           mk("/news/2", 200, "خبر دوم", "توضیح", "عنوان", 90),
         ];
-        setResult(analyse(pages));
+        const res = analyse(pages);
+        setResult(res);
         setPhase("done");
+        saveToHistory(domain, res, 137);
       }, 2600);
       return;
     }
@@ -206,22 +238,44 @@ export default function MobilePage() {
       await invoke("domain_crawl_command", { domain });
       // crawl_complete usually fires first; this is the fallback.
       if (pagesRef.current.length) {
-        setResult(analyse(pagesRef.current));
+        const res = analyse(pagesRef.current);
+        setResult(res);
         setPhase("done");
+        saveToHistory(domain, res, pagesRef.current.length);
       }
     } catch {
-      setResult(analyse(pagesRef.current));
+      const res = analyse(pagesRef.current);
+      setResult(res);
       setPhase(pagesRef.current.length ? "done" : "idle");
+      if (pagesRef.current.length) saveToHistory(domain, res, pagesRef.current.length);
     }
+  };
+
+  const openHistoryEntry = (h) => {
+    setResult(h.result);
+    setCount(h.pages);
+    setUrl(h.domain);
+    setPhase("done");
+    setOpenKey(null);
+    setTab("search");
+  };
+
+  const deleteHistoryEntry = (id) => {
+    setHistory((prev) => {
+      const next = prev.filter((x) => x.id !== id);
+      try { localStorage.setItem("onwebs.m.history", JSON.stringify(next)); } catch {}
+      return next;
+    });
   };
 
   const g = result ? grade(result.score) : null;
   const R = 52, C = 2 * Math.PI * R;
 
   return (
-    <div dir="rtl" className="min-h-screen w-full flex flex-col items-center px-5 pb-10"
+    <div dir="rtl" className="min-h-screen w-full flex flex-col items-center px-5 pb-28"
       style={{ background: `radial-gradient(80% 50% at 50% 0%, ${ACCENT}18 0%, transparent 60%), ${CANVAS}` }}>
 
+      {tab === "search" && (<>
       {/* Brand */}
       <div className="flex flex-col items-center mt-14 mb-8">
         <img src="/icon.png" alt="" className="w-16 h-16 mb-3"
@@ -413,6 +467,199 @@ export default function MobilePage() {
           </motion.div>
         )}
       </AnimatePresence>
+      </>)}
+
+      {/* ------------------------- HISTORY TAB ------------------------- */}
+      {tab === "history" && (
+        <div className="w-full max-w-md mt-12">
+          <h1 className="text-lg font-extrabold mb-1" style={{ color: NAVY_DEEP }}>تاریخچه</h1>
+          <p className="text-[11px] mb-5" style={{ color: "#64748B" }}>
+            تحلیل‌های قبلی — فقط روی همین دستگاه ذخیره می‌شوند
+          </p>
+
+          {history.length === 0 && (
+            <div className="flex flex-col items-center rounded-3xl bg-white py-12 px-6 text-center"
+              style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
+              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style={{ color: "#CBD5E1" }}>
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+              <p className="text-sm font-bold mt-4" style={{ color: NAVY_DEEP }}>هنوز تحلیلی نداری</p>
+              <p className="text-[11px] mt-1" style={{ color: "#64748B" }}>
+                از تب جستجو اولین سایتت را تحلیل کن
+              </p>
+              <button onClick={() => setTab("search")}
+                className="mt-5 px-6 py-2.5 rounded-xl text-xs font-bold text-white"
+                style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
+                برو به جستجو
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {history.map((h) => {
+              const hg = grade(h.score);
+              return (
+                <div key={h.id} className="rounded-2xl bg-white p-4 flex items-center gap-3 active:bg-slate-50"
+                  style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}
+                  onClick={() => openHistoryEntry(h)}>
+                  <div className="w-11 h-11 rounded-full flex items-center justify-center shrink-0"
+                    style={{ background: `${hg.color}1A` }}>
+                    <span className="text-sm font-extrabold tabular-nums" style={{ color: hg.color }}>
+                      {h.score}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-bold truncate text-left" dir="ltr" style={{ color: NAVY_DEEP }}>
+                      {h.domain}
+                    </div>
+                    <div className="text-[10.5px] mt-0.5" style={{ color: "#64748B" }}>
+                      {new Date(h.date).toLocaleDateString("fa-IR")} · {Number(h.pages).toLocaleString("fa-IR")} صفحه · {Number(h.issueCount).toLocaleString("fa-IR")} مشکل
+                    </div>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); deleteHistoryEntry(h.id); }}
+                    className="p-2 shrink-0 active:opacity-60" aria-label="حذف">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ color: "#CBD5E1" }}>
+                      <path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m1 0l-.7 12a2 2 0 01-2 1.9H8.7a2 2 0 01-2-1.9L6 7"
+                        stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------- PROFILE TAB ------------------------- */}
+      {tab === "profile" && (
+        <div className="w-full max-w-md mt-12">
+          {!profile ? (
+            <div className="rounded-3xl bg-white p-6" style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
+              <div className="flex flex-col items-center mb-6">
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mb-3"
+                  style={{ background: `${ACCENT}14` }}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ color: ACCENT }}>
+                    <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.8" />
+                    <path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <h1 className="text-lg font-extrabold" style={{ color: NAVY_DEEP }}>ورود به Onwebs</h1>
+                <p className="text-[11px] mt-1 text-center leading-5" style={{ color: "#64748B" }}>
+                  اطلاعات فقط روی همین دستگاه ذخیره می‌شود — نه سروری، نه رمزی
+                </p>
+              </div>
+              <div className="space-y-3">
+                <input value={formName} onChange={(e) => setFormName(e.target.value)}
+                  placeholder="نام"
+                  className="w-full px-4 py-3.5 rounded-xl text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white"
+                  style={{ color: NAVY_DEEP }} />
+                <input value={formEmail} onChange={(e) => setFormEmail(e.target.value)}
+                  placeholder="ایمیل" dir="ltr" inputMode="email" autoCapitalize="none"
+                  className="w-full px-4 py-3.5 rounded-xl text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white text-left"
+                  style={{ color: NAVY_DEEP }} />
+                <button
+                  disabled={!formName.trim()}
+                  onClick={() => {
+                    const p = { name: formName.trim(), email: formEmail.trim() };
+                    setProfile(p);
+                    try { localStorage.setItem("onwebs.m.profile", JSON.stringify(p)); } catch {}
+                  }}
+                  className="w-full py-3.5 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
+                  ورود
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-3xl bg-white p-6 flex items-center gap-4"
+                style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
+                <div className="w-14 h-14 rounded-full flex items-center justify-center shrink-0 text-white text-xl font-extrabold"
+                  style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
+                  {profile.name.slice(0, 1)}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[15px] font-extrabold truncate" style={{ color: NAVY_DEEP }}>{profile.name}</div>
+                  {profile.email && (
+                    <div className="text-[11px] truncate text-left" dir="ltr" style={{ color: "#64748B" }}>{profile.email}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-white divide-y divide-slate-50 overflow-hidden"
+                style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
+                {[
+                  { label: "وب‌سایت Onwebs", value: "seo.onwebs.ir", href: "https://seo.onwebs.ir" },
+                  { label: "سورس‌کد پروژه", value: "GitHub", href: "https://github.com/AmirMoghtader/onwebs-seo-geo" },
+                  { label: "نسخه‌ی اپ", value: "0.1.0" },
+                ].map((row) => (
+                  <div key={row.label}
+                    onClick={() => row.href && window.open(row.href, "_blank")}
+                    className={`flex items-center justify-between px-5 py-4 ${row.href ? "active:bg-slate-50" : ""}`}>
+                    <span className="text-[12.5px] font-bold" style={{ color: NAVY_DEEP }}>{row.label}</span>
+                    <span className="text-[11.5px]" dir="ltr" style={{ color: row.href ? ACCENT : "#94A3B8" }}>{row.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={() => { setProfile(null); setFormName(""); setFormEmail(""); try { localStorage.removeItem("onwebs.m.profile"); } catch {} }}
+                className="w-full py-3.5 rounded-2xl text-sm font-bold border"
+                style={{ color: "#DC2626", borderColor: "#FECACA", background: "white" }}>
+                خروج از حساب
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* IMDb-style floating pill tab bar: detached capsule, icons only,
+          the active tab gets a soft grey highlight behind it. */}
+      <nav dir="ltr"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full px-2.5 py-1.5"
+        style={{
+          background: "rgba(255,255,255,0.96)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+          boxShadow: "0 10px 34px rgba(16,24,40,0.18), 0 2px 8px rgba(16,24,40,0.07)",
+          marginBottom: "env(safe-area-inset-bottom)",
+        }}>
+        {[
+          { key: "profile", label: "ورود", icon: (c, w) => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+              <circle cx="12" cy="12" r="9.2" stroke="currentColor" strokeWidth={w} />
+              <circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth={w} />
+              <path d="M6.8 18.6c1.2-2.3 3-3.4 5.2-3.4s4 1.1 5.2 3.4" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
+            </svg>
+          )},
+          { key: "search", label: "جستجو", icon: (c, w) => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+              <circle cx="11" cy="11" r="6.8" stroke="currentColor" strokeWidth={w} />
+              <circle cx="11" cy="11" r="2" fill="currentColor" />
+              <path d="M16.2 16.2l4.3 4.3" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
+            </svg>
+          )},
+          { key: "history", label: "تاریخچه", icon: (c, w) => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
+              <circle cx="12" cy="12" r="8.6" stroke="currentColor" strokeWidth={w} />
+              <path d="M12 7.4V12l3.4 2.1" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
+            </svg>
+          )},
+        ].map((t) => {
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)} aria-label={t.label}
+              className="flex items-center justify-center rounded-full active:opacity-70 transition-colors"
+              style={{
+                width: 62, height: 44,
+                background: active ? "#ECEDEF" : "transparent",
+              }}>
+              {t.icon("#141A24", active ? 2 : 1.8)}
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }

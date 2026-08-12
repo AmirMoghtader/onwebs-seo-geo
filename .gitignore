@@ -38,3 +38,7 @@ SCREAMING_FROG_IMPLEMENTATION_PROMPT_FA.md
 !README.md
 !README.fa.md
 !CHANGELOG.md
+
+# android signing — never push
+src-tauri/gen/android/keystore/
+src-tauri/gen/android/keystore.properties
