@@ -29,6 +29,14 @@ export default function RootLayout({
 }>) {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const pathname = usePathname();
+  // The Android build ships the same frontend; its whole UI is the /m page.
+  const isMobileShell = pathname === "/m";
+
+  useEffect(() => {
+    if (!isMobileShell && /Android/i.test(navigator.userAgent)) {
+      window.location.replace("/m");
+    }
+  }, [isMobileShell]);
 
   // GET THE THEME AND SET IT
   useEffect(() => {

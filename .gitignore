@@ -24,3 +24,10 @@ src-tauri/gen/android/.gradle/
 # misc
 .turbo/
 tsconfig.tsbuildinfo
+
+# local working notes / tooling — never push
+.claude/
+TODO.md
+feature.md
+SCREAMING_FROG_GAP_ANALYSIS_FA.md
+SCREAMING_FROG_IMPLEMENTATION_PROMPT_FA.md
