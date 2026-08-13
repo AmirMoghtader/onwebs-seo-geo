@@ -66,7 +66,10 @@ image = "0.24.1"
 actix-web = "4.0"
 google-sheets4 = "*"
 futures = "*"
-rand = "*"
+# Pinned, not "*". `random_range` arrived in 0.9, and a wildcard let a routine
+# re-resolve silently drop the crate to 0.7.3 — which still satisfies "*" and
+# does not have that function. The lockfile hid it until CI built from clean.
+rand = "0.9"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2.3.0"
