@@ -5,7 +5,17 @@ export interface IssueDefinition {
   name: string;
   priority: "High" | "Medium" | "Low";
   recommendedFix: string;
-  detect: (crawlData: any[], robotsBlocked?: string[]) => any[];
+  /**
+   * `brokenLinks` is keyed by dead destination. It has to be passed in because
+   * a page cannot tell on its own whether a link it carries is dead — that is
+   * decided by the crawl, and the paged query strips the link arrays before
+   * they reach the browser.
+   */
+  detect: (
+    crawlData: any[],
+    robotsBlocked?: string[],
+    brokenLinks?: Record<string, { pages: number; sources: string[] }>,
+  ) => any[];
 }
 
 export const ISSUE_REGISTRY: IssueDefinition[] = [
@@ -453,5 +463,43 @@ export const ISSUE_REGISTRY: IssueDefinition[] = [
       "Implement a cookie consent banner and ensure compliance with GDPR and ePrivacy regulations.",
     detect: (data) =>
       data.filter((p) => (p?.cookies_count || 0) > 0),
+  },
+  {
+    id: 44,
+    name: "Broken Outgoing Links",
+    priority: "High",
+    recommendedFix:
+      "These pages link to a destination that no longer answers — a dead domain, a removed page, a typo in a URL. Check whether the same link sits in a shared template: one broken link in a footer becomes one broken link on every page, and a single edit fixes all of them.",
+    detect: (data, _blocked, brokenLinks) => {
+      const carriers = new Set<string>();
+      for (const info of Object.values(brokenLinks || {})) {
+        for (const source of info?.sources || []) carriers.add(source);
+      }
+      if (carriers.size === 0) return [];
+      return data.filter((p) => carriers.has(p?.url));
+    },
+  },
+  {
+    id: 43,
+    name: "Duplicated H2",
+    priority: "Low",
+    recommendedFix:
+      "Boilerplate H2s repeated across pages — a sidebar or footer heading rendered inside the content — tell a search engine nothing about what separates one page from another. Move repeated furniture out of the heading outline, or make each H2 describe its own section.",
+    // Same shape as Duplicated Titles: a heading only counts once it has been
+    // seen on more than one page, and then every page carrying it is affected.
+    detect: (data) => {
+      const seen = new Map<string, number>();
+      for (const p of data) {
+        for (const h2 of p?.headings?.h2 || []) {
+          const text = String(h2 || "").trim();
+          if (text) seen.set(text, (seen.get(text) || 0) + 1);
+        }
+      }
+      return data.filter((p) =>
+        (p?.headings?.h2 || []).some(
+          (h2: any) => (seen.get(String(h2 || "").trim()) || 0) > 1,
+        ),
+      );
+    },
   },
 ];

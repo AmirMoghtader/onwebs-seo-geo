@@ -18,7 +18,6 @@ use crate::crawler;
 pub mod content;
 pub mod db;
 pub mod libs;
-mod page_rank;
 
 /// Struct representing data to be stored in the database
 #[derive(Debug, Serialize, Deserialize)]
@@ -577,21 +576,11 @@ pub async fn crawl(url: String) -> Result<CrawlResult, String> {
         headings: headings.clone(),
     };
 
-    let mut page_rank = Vec::new();
-    // Make page rank fetching non-blocking with timeout
-    let page_rank_future = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        page_rank::fetch_page_rank(&normalized_url)
-    );
-    match page_rank_future.await {
-        Ok(Ok(page_score)) => {
-            page_rank.push(page_score);
-        }
-        _ => {
-            // Use default page rank if API fails or times out
-            page_rank.push(0.0);
-        }
-    }
+    // PageRank is not available from a local crawl. The previous implementation
+    // silently sent every audited domain to OpenPageRank using a credential
+    // embedded in the binary. Keep the legacy response shape without making an
+    // undisclosed third-party request; a future connector can make this opt-in.
+    let page_rank = vec![0.0];
 
     println!("Page URL length: {:?}", url_length);
     db::refresh_links_table().expect("Failed to refresh links table");

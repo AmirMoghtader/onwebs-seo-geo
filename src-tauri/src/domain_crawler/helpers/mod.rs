@@ -3,6 +3,7 @@ pub mod anchor_links;
 pub mod blocked_robots;
 pub mod canonical_selector;
 pub mod check_html_page;
+pub mod content_encoding;
 pub mod content_signature;
 pub mod cookies;
 pub mod cross_origin;
@@ -12,6 +13,7 @@ pub mod extract_url_pattern;
 pub mod favicon;
 pub mod fetch_with_exponential;
 pub mod flesch_reader;
+pub mod forms_selector;
 pub mod headings_selector;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod headless_fetch;
@@ -35,6 +37,7 @@ pub mod page_description;
 pub mod pdf_checker;
 pub mod pdf_selector;
 pub mod robots;
+pub mod request_throttle;
 pub mod schema_selector;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod screenshot;

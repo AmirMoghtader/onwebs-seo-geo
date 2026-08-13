@@ -60,12 +60,9 @@ fn validate_and_normalize_url(base_url: &Url, url: &Url) -> Option<Url> {
     // Normalize
     let mut normalized = url.clone();
 
-    // Remove fragment and query
+    // Fragments are client-side locations, but query bytes and ordering are
+    // part of the crawl identity and must remain untouched.
     normalized.set_fragment(None);
-    // normalized.set_query(None); // Optional: remove query params
-
-    // Handle path normalization
-    normalize_path(&mut normalized);
 
     Some(normalized)
 }
@@ -97,21 +94,37 @@ pub fn is_same_or_subdomain(url_domain: &str, base_domain: &str) -> bool {
         || (base_domain.ends_with(url_root) && base_domain.len() > url_root.len() && base_domain.as_bytes()[base_domain.len() - url_root.len() - 1] == b'.')
 }
 
-/// Comprehensive path normalization
-fn normalize_path(url: &mut Url) {
-    let path = url.path();
+#[cfg(test)]
+mod tests {
+    use super::process_link;
+    use url::Url;
 
-    // Remove trailing slash unless it's root
-    let new_path = if path == "/" {
-        "/".to_string()
-    } else {
-        path.trim_end_matches('/').to_string()
-    };
+    fn process(href: &str) -> Url {
+        let page = Url::parse("https://example.com/dir/page").unwrap();
+        let scope = Url::parse("https://example.com/").unwrap();
+        process_link(&page, &scope, href).unwrap()
+    }
 
-    // Also handle multiple slashes and ./
-    let cleaned_path = new_path
-        .replace("//", "/")  // Remove double slashes
-        .replace("/./", "/"); // Remove ./
+    #[test]
+    fn preserves_trailing_slash_as_a_distinct_url() {
+        let without = process("/path");
+        let with = process("/path/");
+        assert_eq!(without.as_str(), "https://example.com/path");
+        assert_eq!(with.as_str(), "https://example.com/path/");
+        assert_ne!(without, with);
+    }
 
-    url.set_path(&cleaned_path);
+    #[test]
+    fn preserves_repeated_path_slashes() {
+        assert_eq!(process("/a//b").as_str(), "https://example.com/a//b");
+    }
+
+    #[test]
+    fn preserves_query_order_and_only_removes_fragment() {
+        let first = process("/search?b=2&a=1#section");
+        let second = process("/search?a=1&b=2#other");
+        assert_eq!(first.as_str(), "https://example.com/search?b=2&a=1");
+        assert_eq!(second.as_str(), "https://example.com/search?a=1&b=2");
+        assert_ne!(first, second);
+    }
 }

@@ -3,6 +3,7 @@
 use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -11,6 +12,7 @@ use url::Url;
 use super::constants::MAX_PENDING_TIME;
 use super::database::{Database, DatabaseResults};
 use super::helpers::links_status_code_checker::SharedLinkChecker;
+use super::helpers::robots::{RobotsPolicy, RobotsPolicyCache};
 use super::models::DomainCrawlResults;
 use super::helpers::normalize_url::normalize_url;
 
@@ -23,14 +25,52 @@ const MAX_FAILED_URLS: usize = 10_000;
 /// infinite URL traps; beyond this cap new patterns are simply not tracked.
 const MAX_URL_PATTERNS: usize = 20_000;
 
+/// The UI needs representative blocked URLs, not an unbounded copy of every
+/// denied parameter variant found on a crawler trap.
+const MAX_ROBOTS_BLOCKED_URLS: usize = 10_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RobotsFetchStage {
+    Initial,
+    Redirect,
+    Discovered,
+}
+
+impl RobotsFetchStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Redirect => "redirect",
+            Self::Discovered => "discovered",
+        }
+    }
+}
+
 /// Track failed URLs and retries
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct FailedUrl {
     pub url: String,
     pub error: String,
     pub retries: usize,
     pub depth: usize,
     pub timestamp: Instant,
+}
+
+// A URL can fail at several layers (transport, body, parsing), but it is still
+// one failed crawl target. Timestamp and message must not turn retries of the
+// same URL into multiple failures and corrupt completion percentages.
+impl PartialEq for FailedUrl {
+    fn eq(&self, other: &Self) -> bool {
+        self.url == other.url
+    }
+}
+
+impl Eq for FailedUrl {}
+
+impl Hash for FailedUrl {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.url.hash(state);
+    }
 }
 
 /// Progress tracking structure
@@ -82,9 +122,52 @@ pub struct CrawlerState {
     /// Uses DashMap (lock-free concurrent hashmap) to avoid blocking the async executor
     /// under high concurrency (many simultaneous inserts from 50+ tasks).
     pub url_status_registry: Arc<DashMap<String, u16>>,
+    /// Legacy start-origin policy retained until callers migrate to
+    /// `with_robots_cache`. It is never consulted for a cache miss because that
+    /// would leak one origin's policy onto redirects/subdomains.
+    pub robots_policy: RobotsPolicy,
+    pub robots_cache: Option<Arc<RobotsPolicyCache>>,
+    /// List mode keeps this false so it audits the explicit input exactly.
+    pub respect_robots: bool,
+    pub robots_blocked_urls: HashSet<String>,
 }
 
 impl CrawlerState {
+    /// Whether another task is already producing the row for `url`, because it
+    /// has been crawled or is actively being fetched by its own queue entry.
+    ///
+    /// A redirect source consults this before following its target. The
+    /// scheduler already skips a queued URL that a redirect reached first
+    /// (it checks `visited` at dequeue time); this closes the other direction,
+    /// where the target's own fetch is already in flight and both tasks would
+    /// otherwise write competing rows for it.
+    ///
+    /// This only reads state. It deliberately does not record a claim, because
+    /// a claim that outlived its task would strand the URL — `cleanup_stale_pending`
+    /// drops stale entries but never puts them back in the queue.
+    pub async fn redirect_target_already_handled(
+        state: &Arc<Mutex<CrawlerState>>,
+        url: &Url,
+    ) -> bool {
+        let normalized =
+            crate::domain_crawler::helpers::normalize_url::normalize_url(url.as_str());
+        let guard = state.lock().await;
+        guard.visited.contains(&normalized) || guard.pending_urls.contains_key(&normalized)
+    }
+
+    /// Claims the right to record a failure for `url`, clearing its pending entry.
+    ///
+    /// Returns `false` when the URL has already been accounted for — typically by
+    /// a redirect source that resolved to this exact target while its own queue
+    /// entry was still in flight. The caller must then drop its failure instead
+    /// of overwriting the real row and counting the URL twice, once as crawled
+    /// and once as failed, which pushes progress past 100%.
+    pub fn try_claim_failure(&mut self, url: &str) -> bool {
+        self.pending_urls.remove(url);
+        self.last_activity = Instant::now();
+        !self.visited.contains(url)
+    }
+
     pub fn new(db: Option<Database>) -> Self {
         Self {
             visited: HashSet::new(),
@@ -106,6 +189,10 @@ impl CrawlerState {
             pending_results: Vec::with_capacity(64),
             last_cleanup: Instant::now(),
             url_status_registry: Arc::new(DashMap::with_capacity(4096)),
+            robots_policy: RobotsPolicy::default(),
+            robots_cache: None,
+            respect_robots: true,
+            robots_blocked_urls: HashSet::new(),
         }
     }
 
@@ -119,6 +206,87 @@ impl CrawlerState {
         self
     }
 
+    pub fn with_robots_policy(mut self, policy: RobotsPolicy, respect_robots: bool) -> Self {
+        self.robots_policy = policy;
+        self.respect_robots = respect_robots;
+        self
+    }
+
+    pub fn with_robots_cache(
+        mut self,
+        cache: Arc<RobotsPolicyCache>,
+        respect_robots: bool,
+    ) -> Self {
+        self.robots_cache = Some(cache);
+        self.respect_robots = respect_robots;
+        self
+    }
+
+    /// Resolve and enforce the exact-origin robots policy before network work.
+    /// The state lock is released before metadata I/O, then reacquired only to
+    /// retain a bounded blocked-URL sample.
+    pub async fn ensure_allowed_by_robots(
+        state: &Arc<Mutex<Self>>,
+        url: &Url,
+        stage: RobotsFetchStage,
+    ) -> Result<(), String> {
+        let (respect_robots, cache, legacy_policy) = {
+            let guard = state.lock().await;
+            (
+                guard.respect_robots,
+                guard.robots_cache.clone(),
+                guard.robots_policy.clone(),
+            )
+        };
+
+        if !respect_robots {
+            return Ok(());
+        }
+
+        let allowed = match cache {
+            Some(cache) => cache.is_allowed(url).await,
+            None => legacy_policy.is_allowed(url.as_str()),
+        };
+        if allowed {
+            return Ok(());
+        }
+
+        let mut guard = state.lock().await;
+        guard.record_robots_block(url.as_str());
+        Err(format!(
+            "Blocked by robots.txt before {} fetch: {}",
+            stage.label(),
+            url
+        ))
+    }
+
+    /// Return whether a URL may be queued and retain blocked discoveries for
+    /// the UI/export rather than silently dropping them.
+    pub fn allows_by_robots(&mut self, url: &str) -> bool {
+        if !self.respect_robots {
+            return true;
+        }
+
+        let parsed = Url::parse(url).ok();
+        let allowed = match (&self.robots_cache, parsed.as_ref()) {
+            (Some(cache), Some(url)) => cache.is_allowed_cached(url).unwrap_or(true),
+            (Some(_), None) => true,
+            (None, _) => self.robots_policy.is_allowed(url),
+        };
+        if !allowed {
+            self.record_robots_block(url);
+        }
+        allowed
+    }
+
+    fn record_robots_block(&mut self, url: &str) {
+        if self.robots_blocked_urls.len() < MAX_ROBOTS_BLOCKED_URLS
+            || self.robots_blocked_urls.contains(url)
+        {
+            self.robots_blocked_urls.insert(url.to_string());
+        }
+    }
+
     /// Record a failed URL. Always increments `total_failed_count` even though
     /// the `failed_urls` set is periodically truncated to cap memory usage.
     /// Use this instead of inserting into `failed_urls` directly.
@@ -126,6 +294,16 @@ impl CrawlerState {
         let is_new = self.failed_urls.insert(failed);
         if is_new {
             self.total_failed_count += 1;
+        }
+    }
+
+    /// Track URL-shape statistics without using a heuristic to silently drop
+    /// valid product/category pages. The map is diagnostic only and bounded.
+    pub fn record_url_pattern(&mut self, pattern: String) {
+        if let Some(count) = self.url_patterns.get_mut(&pattern) {
+            *count = count.saturating_add(1);
+        } else if self.url_patterns.len() < MAX_URL_PATTERNS {
+            self.url_patterns.insert(pattern, 1);
         }
     }
 
@@ -222,6 +400,9 @@ impl CrawlerState {
                 if !filters.allows(&normalized_url) {
                     continue;
                 }
+                if !self.allows_by_robots(&normalized_url) {
+                    continue;
+                }
 
                 // queued_url_set covers "waiting in queue"; pending_urls covers "actively fetching".
                 // Both must be checked to avoid double-queueing.
@@ -260,6 +441,7 @@ impl Drop for ActiveTaskGuard {
             let mut state_guard = state.lock().await;
             state_guard.active_tasks = state_guard.active_tasks.saturating_sub(1);
             state_guard.active_urls.remove(&url);
+            state_guard.pending_urls.remove(&url);
         });
     }
 }
@@ -272,4 +454,162 @@ pub fn to_database_results(
         url: result.url.clone(),
         data: serde_json::to_value(result)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CrawlerState, RobotsFetchStage};
+    use crate::domain_crawler::helpers::robots::{parse_robots, RobotsPolicyCache};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+    use url::Url;
+
+    #[tokio::test]
+    async fn redirect_stops_when_the_target_is_already_crawled_or_in_flight() {
+        let state = Arc::new(Mutex::new(CrawlerState::new(None)));
+        let target = Url::parse("https://example.com/target").unwrap();
+        let key = crate::domain_crawler::helpers::normalize_url::normalize_url(target.as_str());
+
+        // Untouched target: the redirect may follow it.
+        assert!(!CrawlerState::redirect_target_already_handled(&state, &target).await);
+
+        // Its own queue entry is actively being fetched — following as well
+        // would issue a duplicate GET and write a competing row.
+        state
+            .lock()
+            .await
+            .pending_urls
+            .insert(key.clone(), std::time::Instant::now());
+        assert!(CrawlerState::redirect_target_already_handled(&state, &target).await);
+
+        // Already crawled: nothing left to fetch.
+        {
+            let mut guard = state.lock().await;
+            guard.pending_urls.remove(&key);
+            guard.visited.insert(key.clone());
+        }
+        assert!(CrawlerState::redirect_target_already_handled(&state, &target).await);
+    }
+
+    #[test]
+    fn failure_is_discarded_when_a_redirect_source_already_accounted_the_url() {
+        let mut state = CrawlerState::new(None);
+        let url = "https://example.com/page";
+
+        // The redirect source resolved to this URL and accounted for it first.
+        state.visited.insert(url.to_string());
+        state
+            .pending_urls
+            .insert(url.to_string(), std::time::Instant::now());
+
+        assert!(
+            !state.try_claim_failure(url),
+            "a URL already accounted as crawled must not also be recorded as failed"
+        );
+        assert!(
+            !state.pending_urls.contains_key(url),
+            "the pending entry must still be cleared so the crawl can finish"
+        );
+    }
+
+    #[test]
+    fn failure_is_recorded_when_no_other_task_accounted_the_url() {
+        let mut state = CrawlerState::new(None);
+        let url = "https://example.com/only-here";
+        state
+            .pending_urls
+            .insert(url.to_string(), std::time::Instant::now());
+
+        assert!(state.try_claim_failure(url));
+        assert!(!state.pending_urls.contains_key(url));
+    }
+
+    fn cache() -> Arc<RobotsPolicyCache> {
+        Arc::new(
+            RobotsPolicyCache::new(
+                "StateBot",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                8,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn initial_and_redirect_checks_use_their_exact_origins() {
+        let cache = cache();
+        let origin_a = Url::parse("https://a.example/initial/private").unwrap();
+        let origin_b = Url::parse("https://b.example/redirect/private").unwrap();
+        let (policy_a, _) =
+            parse_robots("User-agent: *\nDisallow: /initial", "StateBot");
+        let (policy_b, _) =
+            parse_robots("User-agent: *\nDisallow: /redirect", "StateBot");
+        assert!(cache.seed_policy(&origin_a, policy_a));
+        assert!(cache.seed_policy(&origin_b, policy_b));
+        let state = Arc::new(Mutex::new(
+            CrawlerState::new(None).with_robots_cache(cache, true),
+        ));
+
+        let initial_error = CrawlerState::ensure_allowed_by_robots(
+            &state,
+            &origin_a,
+            RobotsFetchStage::Initial,
+        )
+        .await
+        .unwrap_err();
+        assert!(initial_error.contains("before initial fetch"));
+        assert!(CrawlerState::ensure_allowed_by_robots(
+            &state,
+            &Url::parse("https://a.example/redirect/private").unwrap(),
+            RobotsFetchStage::Initial,
+        )
+        .await
+        .is_ok());
+
+        let redirect_error = CrawlerState::ensure_allowed_by_robots(
+            &state,
+            &origin_b,
+            RobotsFetchStage::Redirect,
+        )
+        .await
+        .unwrap_err();
+        assert!(redirect_error.contains("before redirect fetch"));
+        assert!(CrawlerState::ensure_allowed_by_robots(
+            &state,
+            &Url::parse("https://b.example/initial/private").unwrap(),
+            RobotsFetchStage::Redirect,
+        )
+        .await
+        .is_ok());
+
+        let guard = state.lock().await;
+        assert!(guard.robots_blocked_urls.contains(origin_a.as_str()));
+        assert!(guard.robots_blocked_urls.contains(origin_b.as_str()));
+    }
+
+    #[tokio::test]
+    async fn explicit_list_mode_ignores_robots_at_every_stage() {
+        let cache = cache();
+        let blocked = Url::parse("https://list.example/anything").unwrap();
+        let (policy, _) = parse_robots("User-agent: *\nDisallow: /", "StateBot");
+        assert!(cache.seed_policy(&blocked, policy));
+        let state = Arc::new(Mutex::new(
+            CrawlerState::new(None).with_robots_cache(cache, false),
+        ));
+
+        for stage in [
+            RobotsFetchStage::Initial,
+            RobotsFetchStage::Redirect,
+            RobotsFetchStage::Discovered,
+        ] {
+            assert!(
+                CrawlerState::ensure_allowed_by_robots(&state, &blocked, stage)
+                    .await
+                    .is_ok()
+            );
+        }
+        assert!(state.lock().await.robots_blocked_urls.is_empty());
+    }
 }

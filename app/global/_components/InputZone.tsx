@@ -19,9 +19,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 interface InputZoneProps {
   handleDomainCrawl: (url: string) => void;
+  /** Empties the results so the next crawl starts clean. */
+  handleClearCrawl: () => void;
 }
 
-const InputZone = ({ handleDomainCrawl }: InputZoneProps) => {
+const InputZone = ({ handleDomainCrawl, handleClearCrawl }: InputZoneProps) => {
   const [url, setUrl] = useState("");
     const domainCrawlLoading = useGlobalCrawlStore((state) => state.domainCrawlLoading);
   const crawlDataLength = useGlobalCrawlStore((state) => state.crawlData.length);
@@ -203,6 +205,19 @@ const InputZone = ({ handleDomainCrawl }: InputZoneProps) => {
                   </motion.button>
                 )}
               </AnimatePresence>
+
+              {/* Screaming Frog puts Clear right here, beside the address
+                  bar. Without it the only way to start fresh was to quit the
+                  app. It appears only when there is something to clear. */}
+              {!domainCrawlLoading && crawlDataLength > 0 && (
+                <button
+                  onClick={handleClearCrawl}
+                  title="پاک کردن نتایج و آماده شدن برای کراول بعدی"
+                  className="h-6 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border border-gray-300 dark:border-brand-dark text-gray-500 hover:text-rose-500 hover:border-rose-400 shadow-sm transition-all active:scale-95"
+                >
+                  پاک کردن
+                </button>
+              )}
 
               {!domainCrawlLoading ? (
                 <button

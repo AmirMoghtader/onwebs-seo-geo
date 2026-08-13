@@ -1,8 +1,10 @@
 use serde::Serialize;
 
 pub fn local_version() -> String {
-    let version = "0.4.0".to_string();
-    version
+    // Cargo.toml is the authoritative backend version. Keeping a second
+    // handwritten value here previously made the 0.1.0 application report
+    // itself as RustySEO 0.4.0 and also triggered destructive config resets.
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 // Unlike version_check_command, this never touches the network — it's for

@@ -231,6 +231,18 @@ pub fn read_domain_results_history_table() -> Result<Vec<DeepCrawlHistory>, Stri
 pub fn delete_domain_results_history(domain: String) -> Result<(), String> {
     let conn = open_domain_db_connection("deep_crawl.db").map_err(|e| e.to_string())?;
 
+    let mut id_statement = conn
+        .prepare("SELECT id FROM deep_crawls_history WHERE domain = ?1")
+        .map_err(|e| e.to_string())?;
+    let ids = id_statement
+        .query_map(params![&domain], |row| row.get::<_, i32>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(id_statement);
+    crate::domain_crawler::database::delete_crawl_snapshots(&ids)
+        .map_err(|e| e.to_string())?;
+
     conn.execute(
         "DELETE FROM deep_crawls_history WHERE domain = ?1",
         params![&domain],
@@ -245,6 +257,9 @@ pub fn delete_domain_results_history(domain: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_domain_result_by_id(id: i32) -> Result<(), String> {
     let conn = open_domain_db_connection("deep_crawl.db").map_err(|e| e.to_string())?;
+
+    crate::domain_crawler::database::delete_crawl_snapshots(&[id])
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
         "DELETE FROM deep_crawls_history WHERE id = ?1",
@@ -265,6 +280,9 @@ pub fn delete_domain_results_by_ids(ids: Vec<i32>) -> Result<(), String> {
 
     let conn = open_domain_db_connection("deep_crawl.db").map_err(|e| e.to_string())?;
 
+    crate::domain_crawler::database::delete_crawl_snapshots(&ids)
+        .map_err(|e| e.to_string())?;
+
     let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
     let sql = format!(
         "DELETE FROM deep_crawls_history WHERE id IN ({})",
@@ -283,11 +301,10 @@ pub fn delete_domain_results_by_ids(ids: Vec<i32>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn create_domain_results_history(data: Vec<DeepCrawlHistory>) -> Result<String, String> {
-    println!("Data to insert: {:?}", &data);
-
+pub fn create_domain_results_history(data: Vec<DeepCrawlHistory>) -> Result<Vec<i64>, String> {
     // Open the database connection
     let conn = open_domain_db_connection("deep_crawl.db").map_err(|e| e.to_string())?;
+    let mut inserted_ids = Vec::with_capacity(data.len());
 
     // Write each object in the array to the database
     for item in &data {
@@ -335,12 +352,10 @@ pub fn create_domain_results_history(data: Vec<DeepCrawlHistory>) -> Result<Stri
             ],
         )
         .map_err(|e| e.to_string())?;
+        inserted_ids.push(conn.last_insert_rowid());
     }
 
-    println!("Data written to the database successfully");
-
-    // Return a success message
-    Ok("Data inserted successfully".to_string())
+    Ok(inserted_ids)
 }
 
 // HANDLE THE CUSTOM SEARCH RULES

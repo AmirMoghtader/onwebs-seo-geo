@@ -35,8 +35,14 @@ function computeStats(data: any[]) {
   // score defaults to 0.5 (indexable) to match the extractor's default.
   const ni = data.filter((p) => (p?.indexability?.indexability ?? 0.5) < 0.5).length;
   const totalLinks = data.reduce((sum, p) => sum + (p?.internal_links_count || 0) + (p?.external_links_count || 0), 0);
+  // A URL that never produced a response. It is a real row carrying its reason
+  // in `crawl_error`, and it lands in none of the status buckets above — which
+  // is why a crawl could report 3XX=0 4XX=0 5XX=0 while 38 URLs had failed.
+  const failed = data.filter(
+    (p) => (p?.status_code || 0) === 0 && Boolean(p?.crawl_error),
+  ).length;
 
-  return { c3, c4, c5, ni, totalLinks };
+  return { c3, c4, c5, ni, totalLinks, failed };
 }
 
 // ─── Single digit cell ────────────────────────────────────────────────────────
@@ -143,6 +149,7 @@ function OverviewChart() {
   const finalCrawlStats         = useFinalCrawlStats();
 
   const [failed3xx, setFailed3xx]             = useState(0);
+  const [failedUrls, setFailedUrls]           = useState(0);
   const [failed4xx, setFailed4xx]             = useState(0);
   const [failed5xx, setFailed5xx]             = useState(0);
   const [nonIndexable, setNonIndexable]       = useState(0);
@@ -196,14 +203,16 @@ function OverviewChart() {
       setFailed5xx(0);
       setNonIndexable(0);
       setTotalLinks(0);
+      setFailedUrls(0);
       return;
     }
-    const { c3, c4, c5, ni, totalLinks } = computeStats(data);
+    const { c3, c4, c5, ni, totalLinks, failed } = computeStats(data);
     setFailed3xx(c3);
-      setFailed4xx(c4);
+    setFailed4xx(c4);
     setFailed5xx(c5);
     setNonIndexable(ni);
     setTotalLinks(totalLinks);
+    setFailedUrls(failed);
   }, [crawlDataLength]);
 
   // Also lock in final 4xx/5xx/indexability counts once the crawl_complete
@@ -214,12 +223,13 @@ function OverviewChart() {
     const p = listen("crawl_complete", () => {
       if (dead) return;
       const data = useGlobalCrawlStore.getState().crawlData || [];
-      const { c3, c4, c5, ni, totalLinks } = computeStats(data);
+      const { c3, c4, c5, ni, totalLinks, failed } = computeStats(data);
       setFailed3xx(c3);
       setFailed4xx(c4);
       setFailed5xx(c5);
       setNonIndexable(ni);
       setTotalLinks(totalLinks);
+      setFailedUrls(failed);
     });
     return () => { dead = true; p.then((f) => f()); };
   }, []);

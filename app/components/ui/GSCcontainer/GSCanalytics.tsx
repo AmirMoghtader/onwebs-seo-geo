@@ -26,6 +26,10 @@ import { Button } from "@/components/ui/button";
 import { format, subDays, isValid, parse } from "date-fns";
 import { exportToCSV } from "@/app/utils/csvUtils";
 
+const isMissingGscCredentials = (error: unknown) =>
+  String(error).includes("client secret file") ||
+  String(error).includes("credentials file");
+
 // Interface defining the structure of a Keyword object
 interface GscUrl {
   id: number;
@@ -192,7 +196,13 @@ const GSCanalytics = () => {
       console.log("GSC refresh cycle completed");
       toast.success("داده‌های Search Console به‌روزرسانی شد");
     } catch (error) {
-      console.error("Failed to refresh GSC data:", error);
+      // Not having connected Google Search Console is a normal state,
+      // not a failure worth a red error badge on every launch.
+      if (isMissingGscCredentials(error)) {
+        console.debug("Google Search Console is not connected yet.");
+      } else {
+        console.error("Failed to refresh GSC data:", error);
+      }
       // Determine if error is an object with message or string
       const updateError =
         error instanceof Error ? error.message : String(error);

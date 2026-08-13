@@ -10,6 +10,8 @@ export interface AppSettings {
 
     // General Crawler
     user_agents: string[];
+    http_user_agent: string;
+    robots_user_agent: string;
     concurrent_requests: number;
     batch_size: number;
     max_depth: number;
@@ -117,28 +119,9 @@ export function useSettings() {
                 try {
                     setSaving(true);
 
-                    // Build TOML string for the update
-                    let tomlValue: string;
-                    if (typeof value === "boolean") {
-                        tomlValue = `${key} = ${value}`;
-                    } else if (typeof value === "number") {
-                        // For floats, ensure decimal point
-                        tomlValue =
-                            Number.isInteger(value) && key !== "links_jitter_factor"
-                                ? `${key} = ${value}`
-                                : `${key} = ${value.toFixed ? value.toFixed(2) : value}`;
-                    } else if (typeof value === "string") {
-                        tomlValue = `${key} = "${value}"`;
-                    } else if (Array.isArray(value)) {
-                        const items = value.map((v) => `"${v}"`).join(", ");
-                        tomlValue = `${key} = [${items}]`;
-                    } else {
-                        tomlValue = `${key} = ${JSON.stringify(value)}`;
-                    }
-
                     const updated = await invoke<AppSettings>(
                         "update_settings_command",
-                        { updates: tomlValue },
+                        { updates: JSON.stringify({ [key]: value }) },
                     );
                     setSettings(updated);
 

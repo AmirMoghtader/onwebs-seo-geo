@@ -8,6 +8,7 @@
 // from the reference export.
 
 import { titlePixels, descriptionPixels } from "../SubTables/DetailsTable/pixelWidth";
+import { displayAddress, encodedAddress } from "@/app/lib/urlDisplay";
 
 export interface InternalColumn {
   header: string;
@@ -84,7 +85,7 @@ function folderDepth(url: string): number | "" {
 }
 
 export const INTERNAL_COLUMNS: InternalColumn[] = [
-  { header: "Address", width: "460px", align: "left", value: (r) => r?.address || "" },
+  { header: "Address", width: "460px", align: "left", value: (r) => displayAddress(r?.address) },
   { header: "Content Type", width: "170px", align: "left", value: (r) => r?.contentType || "" },
   { header: "Status Code", width: "95px", align: "center", value: (r) => r?.statusCode ?? "" },
   { header: "Status", width: "130px", align: "left", value: (r) => statusText(r?.statusCode) },
@@ -195,13 +196,7 @@ export const INTERNAL_COLUMNS: InternalColumn[] = [
     header: "URL Encoded Address",
     width: "300px",
     align: "left",
-    value: (r) => {
-      try {
-        return r?.address ? encodeURI(r.address) : "";
-      } catch {
-        return r?.address || "";
-      }
-    },
+    value: (r) => encodedAddress(r?.address),
   },
   { header: "Crawl Timestamp", width: "170px", align: "left", value: (r) => r?.crawlTimestamp || "" },
 ];

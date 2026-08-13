@@ -16,6 +16,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
+use super::helpers::normalize_url::normalize_url;
+
 const DAMPING: f64 = 0.85;
 const ITERATIONS: usize = 10;
 
@@ -194,17 +196,11 @@ pub fn compute_link_scores(pages: &[Value]) -> HashMap<String, u32> {
         .collect()
 }
 
-/// Strips fragments and trailing slashes so equivalent URLs compare equal.
+/// Use the crawler's resource-identity contract. Fragments and default ports
+/// do not identify a different HTTP resource, while query order, escaping and
+/// `/path` versus `/path/` can change the server response and must survive.
 fn normalize(url: &str) -> String {
-    let mut u = url.trim();
-    if let Some(idx) = u.find('#') {
-        u = &u[..idx];
-    }
-    let mut u = u.to_string();
-    if u.len() > 1 && u.ends_with('/') {
-        u.pop();
-    }
-    u
+    normalize_url(url.trim())
 }
 
 /// Resolves the page's first HTML canonical href (if any) to an absolute, normalised URL.
@@ -291,5 +287,18 @@ mod tests {
         let scores = compute_link_scores(&pages);
         assert_eq!(scores.len(), 1);
         assert_eq!(scores["https://site.com/a"], 100);
+    }
+
+    #[test]
+    fn resource_distinct_query_and_trailing_slash_variants_are_not_merged() {
+        let pages = vec![
+            page("https://site.com/path", 200, vec![]),
+            page("https://site.com/path/", 200, vec![]),
+            page("https://site.com/path?a=1&a=2", 200, vec![]),
+            page("https://site.com/path?a=2&a=1", 200, vec![]),
+        ];
+
+        let scores = compute_link_scores(&pages);
+        assert_eq!(scores.len(), 4);
     }
 }

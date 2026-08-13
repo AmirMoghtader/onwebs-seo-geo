@@ -215,11 +215,12 @@ export default function Home() {
   });
 
   // Fetch aggregated data when tab changes
-  const { setAggregatedData, appendAggregatedData } = useDataActions();
+  const { setAggregatedData } = useDataActions();
   const aggregatedData = useGlobalCrawlStore(
     (state) => state.aggregatedData,
     shallow,
   );
+  const inlinkCounts = useGlobalCrawlStore((state) => state.inlinkCounts);
 
   // THIS HANDLES THE DATA FETCHING FROM THE DATABSE TO NO OVERWHELM THE MEMORY.
   // ON TAB CLICK IT SHOULD LOAD THE DATA INTO THE RESPECTIVE TAB.
@@ -271,15 +272,6 @@ export default function Home() {
               offset: 0,
             })) as any[];
             if (isSubscribed) setAggregatedData({ internalLinks: first || [] });
-            if ((first?.length ?? 0) === PAGE_SIZE) {
-              const rest = (await invoke("get_links_page_command", {
-                dataType: "internal_links",
-                limit: 0,
-                offset: PAGE_SIZE,
-              })) as any[];
-              if (isSubscribed && rest?.length)
-                appendAggregatedData({ internalLinks: rest });
-            }
           } else if (activeTab === "externalLinks") {
             const PAGE_SIZE = 5000;
             const first = (await invoke("get_links_page_command", {
@@ -288,15 +280,6 @@ export default function Home() {
               offset: 0,
             })) as any[];
             if (isSubscribed) setAggregatedData({ externalLinks: first || [] });
-            if ((first?.length ?? 0) === PAGE_SIZE) {
-              const rest = (await invoke("get_links_page_command", {
-                dataType: "external_links",
-                limit: 0,
-                offset: PAGE_SIZE,
-              })) as any[];
-              if (isSubscribed && rest?.length)
-                appendAggregatedData({ externalLinks: rest });
-            }
           } else if (activeTab === "keywords") {
             const res = await invoke("get_aggregated_crawl_data_command", {
               dataType: "keywords",
@@ -569,8 +552,12 @@ export default function Home() {
 
   const internalRows = useMemo(() => {
     if (activeTab !== "internal") return EMPTY_ARRAY;
-    return buildInternalRows(allCrawlData || [], aggregatedData || {});
-  }, [allCrawlData, aggregatedData, activeTab]);
+    return buildInternalRows(
+      allCrawlData || [],
+      aggregatedData || {},
+      inlinkCounts || {},
+    );
+  }, [allCrawlData, aggregatedData, inlinkCounts, activeTab]);
 
 
   // Filters all files

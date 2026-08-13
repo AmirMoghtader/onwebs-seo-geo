@@ -127,6 +127,7 @@ const IssuesContainer = () => {
   }, []);
 
   const robotsBlocked = useGlobalCrawlStore((state) => state.robotsBlocked);
+  const brokenLinks = useGlobalCrawlStore((state) => state.brokenLinks);
   const setIssues = useGlobalCrawlStore((state) => state.setIssues);
   const issueRow = useGlobalCrawlStore((state) => state.issueRow);
   const setIssueRow = useGlobalCrawlStore((state) => state.setIssueRow);
@@ -139,10 +140,14 @@ const IssuesContainer = () => {
   const issueResults = useMemo(() => {
     const results: Record<string, any[]> = {};
     for (const def of ISSUE_REGISTRY) {
-      results[def.name] = def.detect(debouncedCrawlData || [], robotsBlocked);
+      results[def.name] = def.detect(
+        debouncedCrawlData || [],
+        robotsBlocked,
+        brokenLinks,
+      );
     }
     return results;
-  }, [debouncedCrawlData, robotsBlocked]);
+  }, [debouncedCrawlData, robotsBlocked, brokenLinks]);
 
   const totalUrls = debouncedCrawlData?.length || 1;
 
@@ -197,7 +202,7 @@ const IssuesContainer = () => {
 
       const detected: { name: string; count: number; priority: string }[] = [];
       for (const def of ISSUE_REGISTRY) {
-        const urls = def.detect(crawlData, blocked);
+        const urls = def.detect(crawlData, blocked, state.brokenLinks || {});
         if (urls.length > 0) {
           detected.push({
             name: def.name,

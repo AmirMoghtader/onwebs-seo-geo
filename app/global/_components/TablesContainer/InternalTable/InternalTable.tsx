@@ -35,6 +35,7 @@ import {
   DEFAULT_VISIBLE,
 } from "./columns";
 import { useTableSort, sortIndicator } from "../components/useTableSort";
+import { displayAddress } from "@/app/lib/urlDisplay";
 import useGlobalCrawlStore, { useDataActions } from "@/store/GlobalCrawlDataStore";
 
 const STORAGE_KEY = "onwebs.internal.visibleColumns";
@@ -118,7 +119,7 @@ const TableHeader = memo(({ visible, onSort, sort }: any) => (
 TableHeader.displayName = "InternalTableHeader";
 
 const TableRow = memo(
-  ({ row, index, all, visible, isSelected, onRowClick }: any) => {
+  ({ row, index, all, visible, isSelected, isPicked, onRowClick, onRowContextMenu }: any) => {
     const rowData = useMemo(
       () => getRowValues(row, index, all),
       [row, index, all],
@@ -126,7 +127,8 @@ const TableRow = memo(
 
     return (
       <div
-        onClick={() => onRowClick(index)}
+        onClick={(e: any) => onRowClick(index, e)}
+        onContextMenu={(e: any) => onRowContextMenu(index, e)}
         style={{
           display: "grid",
           gridTemplateColumns: visible.map((v: any) => v.width).join(" "),
@@ -139,7 +141,9 @@ const TableRow = memo(
         className={`text-xs cursor-pointer ${
           isSelected
             ? "bg-brand-bright"
-            : "hover:bg-gray-100 dark:hover:bg-brand-dark/40"
+            : isPicked
+              ? "bg-brand-bright/20"
+              : "hover:bg-gray-100 dark:hover:bg-brand-dark/40"
         }`}
       >
         {visible.map((v: any) => {
@@ -170,6 +174,13 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterKey, setFilterKey] = useState("all");
   const [clickedRow, setClickedRow] = useState<number | null>(null);
+  // Addresses currently selected, by the same rules a file list uses: click,
+  // Cmd-click, Shift-click. Selection is available everywhere, not only in the
+  // failure view — what the right-click menu will *do* with it is what varies.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [retrying, setRetrying] = useState(false);
+  /** Where the right-click menu is anchored, or null when it is closed. */
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const { selectURL, setSelectedTableURL, setInlinks, setOutlinks } =
     useDataActions();
@@ -304,6 +315,14 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
         return (r: any) => code(r) >= 500;
       case "nonIndexable":
         return (r: any) => r?.indexability === "Non-Indexable";
+      // A real failure is status 0 *and* a reason. `crawl_error` alone is far
+      // too broad: a redirect whose target was already handled carries a note
+      // in the same field, which on one websima.com crawl was 278 perfectly
+      // healthy 301s against 10 genuine failures. Status alone is no good
+      // either, since assets have no status yet and read as 0.
+      case "failed":
+        return (r: any) =>
+          Number(r?.statusCode) === 0 && Boolean(r?.crawlError);
       default:
         return null;
     }
@@ -323,8 +342,13 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
     }
     const term = searchTerm.trim().toLowerCase();
     if (term) {
+      // Both forms of the address are searchable: the column shows the readable
+      // one, so typing `سئو` has to match, but a URL pasted from the browser
+      // arrives percent-encoded and has to match too.
       out = out.filter((r: any) =>
-        `${r.address} ${r.title} ${r.contentType}`.toLowerCase().includes(term),
+        `${r.address} ${displayAddress(r.address)} ${r.title} ${r.contentType}`
+          .toLowerCase()
+          .includes(term),
       );
     }
     return out;
@@ -362,8 +386,90 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
     setFilterKey("all");
   }, [setTableFilter]);
 
+  // Where a Shift-range measures from: the last row clicked without Shift.
+  const anchorRef = useRef<number | null>(null);
   const sortedRowsRef = useRef<any[]>([]);
   sortedRowsRef.current = sortedRows;
+
+  // Selection follows the platform convention rather than inventing one:
+  // a plain click replaces the selection, Cmd (or Ctrl) adds and removes one
+  // row, and Shift takes the run between the anchor and the row clicked.
+  const applySelection = useCallback((index: number, event: any) => {
+    const rows = sortedRowsRef.current;
+    const address = rows[index]?.address;
+    if (!address) return;
+
+    const additive = event?.metaKey || event?.ctrlKey;
+    const ranged = event?.shiftKey;
+
+    setPicked((current) => {
+      if (ranged && anchorRef.current !== null) {
+        const [from, to] = [anchorRef.current, index].sort((a, b) => a - b);
+        const run = rows
+          .slice(from, to + 1)
+          .map((r: any) => r?.address)
+          .filter(Boolean);
+        // Shift extends what is already there, the way a file list does.
+        return new Set(additive ? [...current, ...run] : run);
+      }
+
+      if (additive) {
+        const next = new Set(current);
+        next.has(address) ? next.delete(address) : next.add(address);
+        anchorRef.current = index;
+        return next;
+      }
+
+      anchorRef.current = index;
+      return new Set([address]);
+    });
+  }, []);
+
+  const onRowContextMenu = useCallback(
+    (rowIndex: number, event: any) => {
+      event.preventDefault();
+      const address = sortedRowsRef.current[rowIndex]?.address;
+      if (!address) return;
+      // Right-clicking inside an existing selection acts on the whole of it;
+      // right-clicking outside makes that row the selection first.
+      setPicked((current) =>
+        current.has(address) ? current : new Set([address]),
+      );
+      anchorRef.current = rowIndex;
+      setMenuAt({ x: event.clientX, y: event.clientY });
+    },
+    [],
+  );
+
+  // Only rows that never produced a response are worth re-requesting. A page
+  // that answered 404 answered; asking again just crawls it a second time.
+  const retryableUrls = useMemo(
+    () =>
+      sortedRowsRef.current
+        .filter(
+          (r: any) =>
+            picked.has(r?.address) &&
+            Number(r?.statusCode) === 0 &&
+            Boolean(r?.crawlError),
+        )
+        .map((r: any) => r.address),
+    [picked],
+  );
+  const retryableCount = retryableUrls.length;
+
+  const retryPicked = useCallback(async () => {
+    if (retryableUrls.length === 0) return;
+    setRetrying(true);
+    try {
+      await invoke("retry_urls_command", { urls: retryableUrls });
+      toast.success(`${retryableUrls.length} نشانی دوباره تلاش شد`);
+      setPicked(new Set());
+    } catch (error) {
+      toast.error(`تلاش مجدد ناموفق بود: ${error}`);
+    } finally {
+      setRetrying(false);
+    }
+  }, [retryableUrls]);
 
   const rowVirtualizer = useVirtualizer({
     count: sortedRows.length,
@@ -403,7 +509,13 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
   };
 
   const onRowClick = useCallback(
-    (rowIndex: number) => {
+    (rowIndex: number, event?: any) => {
+      applySelection(rowIndex, event);
+
+      // A modified click is selecting, not navigating: opening the details
+      // pane for the last row of a Cmd-click run would fight the selection.
+      if (event?.metaKey || event?.ctrlKey || event?.shiftKey) return;
+
       setClickedRow((prev) => (prev === rowIndex ? null : rowIndex));
       const row = sortedRowsRef.current[rowIndex];
       if (!row?.address) return;
@@ -558,7 +670,9 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
                   all={sortedRows}
                   visible={visible}
                   isSelected={clickedRow === virtualRow.index}
+                  isPicked={picked.has(sortedRows[virtualRow.index]?.address)}
                   onRowClick={onRowClick}
+                  onRowContextMenu={onRowContextMenu}
                 />
               </div>
             ))}
@@ -569,6 +683,64 @@ const InternalTable = ({ rows = [], rowHeight = 26, overscan = 12 }: any) => {
           </div>
         )}
       </div>
+
+      {/* Right-click menu. Rendered at the cursor rather than wrapping every
+          row in a trigger, so the virtualiser keeps recycling plain divs. */}
+      {menuAt && (
+        <>
+          <div
+            className="fixed inset-0 z-[100000]"
+            onClick={() => setMenuAt(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenuAt(null);
+            }}
+          />
+          <div
+            className="fixed z-[100001] min-w-[200px] rounded-md border bg-popover text-popover-foreground shadow-md py-1 text-xs"
+            style={{ top: menuAt.y, left: menuAt.x }}
+          >
+            <div className="px-3 py-1 text-[10px] text-gray-500 dark:text-white/40">
+              {picked.size} نشانی انتخاب‌شده
+            </div>
+            <button
+              onClick={() => {
+                setMenuAt(null);
+                retryPicked();
+              }}
+              disabled={retryableCount === 0 || retrying}
+              title={
+                retryableCount === 0
+                  ? "فقط نشانی‌هایی که کراول نشدند دوباره تلاش می‌شوند"
+                  : "این نشانی‌ها را دوباره درخواست کن"
+              }
+              className="w-full text-left px-3 py-1.5 hover:bg-brand-bright hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-inherit disabled:cursor-not-allowed transition-colors"
+            >
+              تلاش مجدد
+              {retryableCount > 0 ? ` (${retryableCount})` : ""}
+            </button>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(Array.from(picked).join("\n"));
+                toast.success(`${picked.size} نشانی کپی شد`);
+                setMenuAt(null);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-brand-bright hover:text-white transition-colors"
+            >
+              کپی نشانی‌ها
+            </button>
+            <button
+              onClick={() => {
+                setPicked(new Set());
+                setMenuAt(null);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-brand-bright hover:text-white transition-colors"
+            >
+              لغو انتخاب
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 };

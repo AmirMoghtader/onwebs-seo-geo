@@ -11,6 +11,10 @@
 import React, { useMemo, useState } from "react";
 import { Search, Copy, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { displayAddress, encodedAddress } from "@/app/lib/urlDisplay";
+import { linkCountsFor } from "@/app/lib/linkCounts";
+import { pageSizeFor } from "@/app/lib/pageSize";
+import useGlobalCrawlStore from "@/store/GlobalCrawlDataStore";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import {
@@ -36,7 +40,14 @@ function sentenceCount(text: string): number {
   return (text.match(/[.!?۔؟]+/g) || []).length || 1;
 }
 
-function buildFields(p: any): Field[] {
+/** Same normalisation the backend keyed its inlink map with. */
+const inlinkKey = (u: string) =>
+  String(u || "").split("#")[0].replace(/\/$/, "");
+
+function buildFields(
+  p: any,
+  inlinkCounts: Record<string, { inlinks: number; unique: number }> = {},
+): Field[] {
   if (!p) return [];
 
   const meta = p?.page_meta || {};
@@ -56,9 +67,15 @@ function buildFields(p: any): Field[] {
   const titlePx = titlePixels(title);
   const descPx = descriptionPixels(desc);
 
-  const bytes = Number(meta.transferred_bytes) || 0;
-  const kb = (n: number) => (n ? `${(n / 1024).toFixed(1)} kB` : "");
-  const co2 = bytes ? (bytes * 0.000000000072 * 442 * 1000).toFixed(3) : "";
+  const size = pageSizeFor(p);
+  const kb = (n: number | "") =>
+    typeof n === "number" && n ? `${(n / 1024).toFixed(1)} kB` : "";
+  // CO2 is a function of what crossed the network, so it can only be given
+  // where the transferred size is known.
+  const co2 =
+    typeof size.transferredBytes === "number" && size.transferredBytes
+      ? (size.transferredBytes * 0.000000000072 * 442 * 1000).toFixed(3)
+      : "";
 
   let folderDepth: number | "" = "";
   try {
@@ -67,29 +84,15 @@ function buildFields(p: any): Field[] {
     folderDepth = "";
   }
 
-  const internal = p?.inoutlinks_status_codes?.internal || [];
-  const external = p?.inoutlinks_status_codes?.external || [];
-  const uniq = (list: any[]) => {
-    const seen = new Set<string>();
-    for (const l of list || []) {
-      const u = typeof l === "string" ? l : l?.url || l?.href || l?.link;
-      if (u) seen.add(String(u).split("#")[0]);
-    }
-    return seen.size;
-  };
+  const links = linkCountsFor(p);
+  const inlinks = inlinkCounts[inlinkKey(p?.url)];
 
   // Field order mirrors Screaming Frog's URL Details export exactly.
   const f: Field[] = [
-    { name: "Address", value: p?.url || "" },
+    { name: "Address", value: displayAddress(p?.url) },
     {
       name: "URL Encoded Address",
-      value: (() => {
-        try {
-          return p?.url ? encodeURI(p.url) : "";
-        } catch {
-          return p?.url || "";
-        }
-      })(),
+      value: encodedAddress(p?.url),
     },
     { name: "Content Type", value: p?.content_type || "" },
     { name: "Status Code", value: code || "" },
@@ -148,9 +151,9 @@ function buildFields(p: any): Field[] {
     { name: 'HTTP rel="prev" 1', value: meta.http_rel_prev || "" },
     { name: "amphtml Link Element", value: pag.amphtml || "" },
 
-    { name: "Size", value: kb(Number(p?.page_size?.[0]?.bytes) || 0) },
-    { name: "Transferred", value: kb(bytes) },
-    { name: "Total Transferred", value: kb(bytes) },
+    { name: "Size", value: kb(size.sizeBytes) },
+    { name: "Transferred", value: kb(size.transferredBytes) },
+    { name: "Total Transferred", value: kb(size.transferredBytes) },
     { name: "CO2 (mg)", value: co2 },
 
     { name: "Word Count", value: words || "" },
@@ -183,12 +186,15 @@ function buildFields(p: any): Field[] {
     { name: "Folder Depth", value: folderDepth },
     { name: "Link Score", value: p?.link_score ?? "" },
 
-    { name: "Inlinks", value: p?.inlinks_count ?? "" },
-    { name: "Unique Inlinks", value: p?.unique_inlinks_count ?? "" },
-    { name: "Outlinks", value: internal.length || "" },
-    { name: "Unique Outlinks", value: uniq(internal) || "" },
-    { name: "External Outlinks", value: external.length || "" },
-    { name: "Unique External Outlinks", value: uniq(external) || "" },
+    // These read `p.inlinks_count` before, a field nothing in the codebase
+    // ever wrote, so both rows were permanently blank. Inlinks belong to the
+    // crawl, not the page, and now come from the inverted graph.
+    { name: "Inlinks", value: inlinks?.inlinks ?? "" },
+    { name: "Unique Inlinks", value: inlinks?.unique ?? "" },
+    { name: "Outlinks", value: links.outlinks },
+    { name: "Unique Outlinks", value: links.uniqueOutlinks },
+    { name: "External Outlinks", value: links.externalOutlinks },
+    { name: "Unique External Outlinks", value: links.uniqueExternalOutlinks },
 
     { name: "Hash", value: meta.content_hash || "" },
     {
@@ -197,6 +203,22 @@ function buildFields(p: any): Field[] {
     },
     { name: "Last Modified", value: meta.last_modified || "" },
   ];
+
+  // One pair of rows per form, the way Screaming Frog numbers them. `insecure`
+  // is worth shouting about: a form on an https page posting to http shows the
+  // padlock while the data leaves in the clear.
+  (Array.isArray(p?.forms) ? p.forms : []).forEach((form: any, i: number) => {
+    const n = i + 1;
+    f.push({
+      name: `Form ${n} Action Link`,
+      value: form?.action || "",
+      warn: Boolean(form?.insecure),
+    });
+    f.push({
+      name: `Form ${n} Action Path Type`,
+      value: form?.path_type || "",
+    });
+  });
 
   // Screaming Frog emits one group of four fields per hreflang entry.
   hreflangs.forEach((h: any, i: number) => {
@@ -256,10 +278,14 @@ function buildFields(p: any): Field[] {
 }
 
 const UrlDetailsPane = ({ data, height }: any) => {
+  const inlinkCounts = useGlobalCrawlStore((state) => state.inlinkCounts);
   const [query, setQuery] = useState("");
   const page = Array.isArray(data) ? data[0] : data;
 
-  const fields = useMemo(() => buildFields(page), [page]);
+  const fields = useMemo(
+    () => buildFields(page, inlinkCounts),
+    [page, inlinkCounts],
+  );
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -326,8 +352,8 @@ const UrlDetailsPane = ({ data, height }: any) => {
         className="grid items-center h-[24px] shrink-0 border-b dark:border-brand-dark bg-slate-100 dark:bg-brand-darker font-bold text-slate-500 dark:text-white/50"
         style={{ gridTemplateColumns: "260px 1fr" }}
       >
-        <span className="pl-3">Name</span>
-        <span className="pl-3">Value</span>
+        <span className="pl-3 text-left">Name</span>
+        <span className="pl-3 text-left">Value</span>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -344,16 +370,29 @@ const UrlDetailsPane = ({ data, height }: any) => {
             style={{ gridTemplateColumns: "260px 1fr" }}
             title="برای کپی مقدار، دوبار کلیک کنید"
           >
-            <span className="pl-3 text-slate-500 dark:text-white/50 truncate">
+            <span className="pl-3 text-left text-slate-500 dark:text-white/50 truncate">
               {f.name}
             </span>
             <span
-              className={`pl-3 py-1 break-words ${
+              // `text-left` opts this pane out of the app-wide rightward text
+              // alignment. That rule is right for Persian prose and wrong
+              // here: it pinned every name to the right edge of its column and
+              // every value to the right edge of the pane, leaving a wide
+              // blank channel between each label and the value it describes.
+              // `plaintext` stays, so a Persian title still reads
+              // right-to-left inside its own cell while sitting beside its
+              // name.
+              className={`pl-3 pr-3 py-1 min-w-0 break-words text-left ${
                 f.warn
                   ? "text-rose-500 font-medium"
                   : "text-slate-700 dark:text-white/80"
               }`}
               style={{ unicodeBidi: "plaintext" }}
+              title={
+                f.value === "" || f.value === null || f.value === undefined
+                  ? undefined
+                  : String(f.value)
+              }
             >
               {f.value === "" || f.value === null || f.value === undefined
                 ? ""

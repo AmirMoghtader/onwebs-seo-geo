@@ -19,7 +19,11 @@ export interface OverviewRow {
 
 const ct = (r: any) => String(r?.content_type || "").toLowerCase();
 const status = (r: any) => Number(r?.status_code) || 0;
-const isHtml = (r: any) => ct(r).includes("html") || !ct(r);
+// An asset carries no title, description or H1, so treating one as HTML would
+// report every PNG on the site as a page missing all three. Assets reach here
+// with an empty content type whenever the extension is unfamiliar, which is
+// why the flag is checked before the type.
+const isHtml = (r: any) => !r?.is_asset && (ct(r).includes("html") || !ct(r));
 const indexable = (r: any) => (r?.indexability?.indexability ?? 0.5) >= 0.5;
 const title = (r: any) => r?.title?.[0]?.title || "";
 const desc = (r: any) => r?.description || "";
@@ -263,9 +267,15 @@ export function buildOverview(rows: any[]): {
   const internalIndexable = all.filter((r) => isHtml(r) && indexable(r)).length;
   const internalNonIndexable = all.filter((r) => isHtml(r) && !indexable(r)).length;
 
+  // Encountered counts every URL the crawl found; Crawled counts the ones it
+  // actually got a response for. They differ while the asset checker is still
+  // filling in statuses, and saying so is more useful than printing the same
+  // number twice.
+  const crawled = all.filter((r) => !r?.is_asset || status(r) > 0).length;
+
   const summary: OverviewRow[] = [
     { key: "encountered", label: "Total URLs Encountered", urls: total, pct: 100, depth: 1 },
-    { key: "crawled", label: "Total URLs Crawled", urls: total, pct: 100, depth: 1 },
+    { key: "crawled", label: "Total URLs Crawled", urls: crawled, pct: pct(crawled, total), depth: 1 },
     { key: "internal", label: "Total Internal URLs", urls: total, pct: 100, depth: 1 },
     {
       key: "indexable",

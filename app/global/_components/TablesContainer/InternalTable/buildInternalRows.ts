@@ -7,59 +7,31 @@
 // than Screaming Frog reported. SF's export of the same site was 228 rows —
 // 126 HTML pages and 102 assets — while our HTML-only view showed 129.
 
-function extFromUrl(url: string): string {
-  try {
-    const path = String(url).split(/[?#]/)[0];
-    const last = path.split("/").pop() || "";
-    const dot = last.lastIndexOf(".");
-    return dot > -1 ? last.slice(dot + 1).toLowerCase() : "";
-  } catch {
-    return "";
-  }
-}
-
-const EXT_CONTENT_TYPE: Record<string, string> = {
-  js: "application/javascript", mjs: "application/javascript", css: "text/css",
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-  webp: "image/webp", avif: "image/avif", svg: "image/svg+xml", ico: "image/x-icon",
-  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
-  eot: "application/vnd.ms-fontobject", pdf: "application/pdf",
-  xml: "application/xml", json: "application/json", mp4: "video/mp4",
-  webm: "video/webm", mp3: "audio/mpeg", zip: "application/zip",
-};
-
-function contentTypeFor(url: string, fallback?: string): string {
-  if (fallback) return fallback;
-  return EXT_CONTENT_TYPE[extFromUrl(url)] || "";
-}
+import { contentTypeFor } from "@/app/lib/contentType";
+import { isFetchableUrl } from "@/app/lib/crawlUniverse";
+import { linkCountsFor } from "@/app/lib/linkCounts";
+import { pageSizeFor } from "@/app/lib/pageSize";
 
 const numOr = (v: any, fallback: any = "") =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
 
-/** Distinct destinations in a link array, which is SF's "Unique" count. */
-function uniqueCount(links: any): number | "" {
-  if (!Array.isArray(links)) return "";
-  const seen = new Set<string>();
-  for (const l of links) {
-    const u = typeof l === "string" ? l : l?.url || l?.href || l?.link;
-    if (u) seen.add(String(u).split("#")[0]);
-  }
-  return seen.size;
-}
-
-function linkCount(links: any): number | "" {
-  return Array.isArray(links) ? links.length : "";
-}
-
 export function buildInternalRows(
   pages: any[],
   aggregated: { images?: any[]; scripts?: any[]; css?: any[]; files?: any[] },
+  /**
+   * Inlink totals from the backend, keyed by normalised URL. The tally below
+   * can only see links the pages in memory happen to carry, and the paged
+   * query strips those arrays entirely — which is why every row read 0. When
+   * the backend's answer is present it wins, because it was computed over the
+   * whole crawl in SQLite rather than over whatever this process holds.
+   */
+  inlinkCounts: Record<string, { inlinks: number; unique: number }> = {},
 ): any[] {
   const rows: any[] = [];
   const seen = new Set<string>();
 
   const push = (r: any) => {
-    if (!r.address || seen.has(r.address)) return;
+    if (!r.address || seen.has(r.address) || !isFetchableUrl(r.address)) return;
     seen.add(r.address);
     rows.push(r);
   };
@@ -111,8 +83,6 @@ export function buildInternalRows(
     const pag = p?.pagination || {};
     const robots = p?.meta_robots?.meta_robots || [];
     const h2 = p?.headings?.h2 || [];
-    const internal = p?.inoutlinks_status_codes?.internal || p?.internal_links || [];
-    const external = p?.inoutlinks_status_codes?.external || p?.external_links || [];
     const k = key(url);
 
     push({
@@ -143,8 +113,7 @@ export function buildInternalRows(
       httpRelPrev: meta.http_rel_prev || "",
       amphtml: pag.amphtml || "",
 
-      sizeBytes: numOr(p?.page_size?.[0]?.bytes),
-      transferredBytes: numOr(meta.transferred_bytes),
+      ...pageSizeFor(p),
 
       wordCount: numOr(p?.word_count),
       sentenceCount: numOr(p?.sentence_count),
@@ -165,13 +134,11 @@ export function buildInternalRows(
       depth: numOr(p?.url_depth),
       linkScore: numOr(p?.link_score),
 
-      inlinks: inlinkTotals.get(k) ?? 0,
-      uniqueInlinks: inlinkSources.get(k)?.size ?? 0,
-      outlinks: linkCount(internal),
-      uniqueOutlinks: uniqueCount(internal),
-      externalOutlinks: linkCount(external),
-      uniqueExternalOutlinks: uniqueCount(external),
+      inlinks: inlinkCounts[k]?.inlinks ?? inlinkTotals.get(k) ?? 0,
+      uniqueInlinks: inlinkCounts[k]?.unique ?? inlinkSources.get(k)?.size ?? 0,
+      ...linkCountsFor(p),
 
+      crawlError: p?.crawl_error || "",
       hash: meta.content_hash || "",
       responseTime: p?.response_time != null ? Number(p.response_time).toFixed(2) : "",
       lastModified: meta.last_modified || "",
@@ -192,70 +159,14 @@ export function buildInternalRows(
     });
   }
 
-  // 1b. Redirect hops as rows of their own.
+  // 1b. Redirect hops are NOT synthesised here any more.
   //
-  // The crawler follows a redirect to its destination and stores one result
-  // for the final URL, so /page (301) and /page/ (200) collapsed into a single
-  // row. Screaming Frog lists both, and that matters: a 301 in the crawl is
-  // something you want to see and fix, not something to hide behind its
-  // target. Every hop before the final URL becomes its own row here, built
-  // from the redirect_chain the crawler already records.
-  for (const p of orderedPages) {
-    const chain = p?.redirect_chain;
-    if (!Array.isArray(chain) || chain.length < 2) continue;
-
-    const finalUrl = p?.url || "";
-    for (let i = 0; i < chain.length - 1; i++) {
-      const hop = chain[i];
-      const hopUrl = hop?.url;
-      const code = Number(hop?.status_code) || 0;
-      // The last entry is the destination, already emitted above; and a hop
-      // that somehow is not a redirect is not a hop.
-      if (!hopUrl || hopUrl === finalUrl || code < 300 || code >= 400) continue;
-
-      const next = chain[i + 1]?.url || finalUrl;
-      const k = key(hopUrl);
-
-      push({
-        address: hopUrl,
-        url: hopUrl,
-        contentType: "text/html",
-        statusCode: code,
-        indexability: "Non-Indexable",
-        indexabilityStatus: "Redirected",
-
-        title: "", metaDescription: "", metaKeywords: "",
-        h1: "", h2_1: "", h2_2: "",
-        metaRobots1: "", metaRobots2: "", xRobotsTag: "", metaRefresh: "",
-        canonical: "", relNext: "", relPrev: "",
-        httpRelNext: "", httpRelPrev: "", amphtml: "",
-
-        sizeBytes: "", transferredBytes: "",
-        wordCount: "", sentenceCount: "",
-        flesch: "", readability: "", textRatio: "",
-
-        depth: numOr(p?.url_depth),
-        linkScore: "",
-
-        inlinks: inlinkTotals.get(k) ?? 0,
-        uniqueInlinks: inlinkSources.get(k)?.size ?? 0,
-        outlinks: "", uniqueOutlinks: "",
-        externalOutlinks: "", uniqueExternalOutlinks: "",
-
-        hash: "",
-        responseTime: "",
-        lastModified: "",
-        redirectUrl: next,
-        redirectType: code === 301 || code === 308 ? "HTTP Redirect" : "HTTP Redirect",
-        cookies: "",
-        language: "",
-        httpVersion: p?.page_meta?.http_version || "",
-        mobileAlternate: "",
-        crawlTimestamp: p?.page_meta?.crawl_timestamp || "",
-        isRedirectHop: true,
-      });
-    }
-  }
+  // The crawler now stores every 3xx source as its own real row with its true
+  // status, so rebuilding them from redirect_chain produced a second, slightly
+  // different row for the same hop whenever the addresses disagreed on a
+  // trailing slash or encoding. The chain stays available for the details
+  // drawer and the redirect report; the table shows only rows that exist in
+  // SQLite.
 
   // 2-4. Assets. They were seen as references inside a page, never parsed, so
   // only the identity columns are populated; check_assets_command fills status
@@ -278,9 +189,11 @@ export function buildInternalRows(
     sizeBytes: extra.sizeBytes ?? "", transferredBytes: extra.sizeBytes ?? "",
     wordCount: "", sentenceCount: "", flesch: "", readability: "", textRatio: "",
     depth: "", linkScore: "",
-    inlinks: inlinkTotals.get(key(url)) ?? "",
-    uniqueInlinks: inlinkSources.get(key(url))?.size ?? "",
+    inlinks: inlinkCounts[key(url)]?.inlinks ?? inlinkTotals.get(key(url)) ?? "",
+    uniqueInlinks:
+      inlinkCounts[key(url)]?.unique ?? inlinkSources.get(key(url))?.size ?? "",
     outlinks: "", uniqueOutlinks: "", externalOutlinks: "", uniqueExternalOutlinks: "",
+    crawlError: "",
     hash: "", responseTime: "", lastModified: "",
     redirectUrl: "", redirectType: "", cookies: "", language: "",
     httpVersion: "", mobileAlternate: "",

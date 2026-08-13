@@ -50,6 +50,22 @@ interface CrawlStore {
    * array legitimately means "nothing matches".
    */
   tableUrlFilter: string[] | null;
+  /**
+   * How many internal links point at each URL, keyed by the URL with its
+   * fragment and trailing slash removed. Computed by the backend once per
+   * crawl by inverting the link graph — no single page knows its own inlinks,
+   * so this cannot be derived row by row.
+   */
+  inlinkCounts: Record<string, { inlinks: number; unique: number }>;
+  /**
+   * Dead external links keyed by destination, with the pages that carry each.
+   * Grouped by destination on purpose: one broken footer link is a single fix,
+   * not one finding per page that repeats it.
+   */
+  brokenLinks: Record<
+    string,
+    { status: number | null; reason: string; pages: number; sources: string[] }
+  >;
   issuesData: string[];
   crawlSessionTotalArray: string[];
   isExtracting: boolean;
@@ -306,6 +322,9 @@ const useGlobalCrawlStore = create<CrawlStore>((set, get) => {
         // into the next one they would hide every fresh row.
         tableFilter: null,
         tableUrlFilter: null,
+        inlinkCounts: {},
+    brokenLinks: {},
+        brokenLinks: {},
         aggregatedData: {
           images: [],
           scripts: [],
@@ -439,6 +458,7 @@ const useGlobalCrawlStore = create<CrawlStore>((set, get) => {
     issuesView: "",
     tableFilter: null,
     tableUrlFilter: null,
+    inlinkCounts: {},
     issuesData: [],
     crawlSessionTotalArray: [],
     isExtracting: false,

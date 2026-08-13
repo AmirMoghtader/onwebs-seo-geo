@@ -85,10 +85,11 @@ fn extract_fingerprints(pages: &[Value]) -> Vec<PageFingerprint> {
         let content_simhash = page.get("content_simhash").and_then(|v| v.as_u64());
         let heading_hash = page.get("heading_hash").and_then(|v| v.as_u64());
 
-        // Trailing slash / no trailing slash (and other normalizable differences) refer
-        // to the same page, not two different pages that happen to share content — so
-        // only the first-seen variant is kept for clustering, avoiding false-positive
-        // "duplicate" pairs like https://x.com/a vs https://x.com/a/.
+        // Collapse only URL spellings that are guaranteed to identify the same
+        // resource (for example fragments and explicit default ports). A trailing
+        // slash is intentionally preserved: `/page` and `/page/` are distinct HTTP
+        // resources and, when both return the same body, that is a real duplicate-
+        // content finding rather than a normalization artefact.
         by_normalized_url
             .entry(normalize_url(url))
             .or_insert(PageFingerprint {
@@ -248,16 +249,24 @@ mod tests {
     }
 
     #[test]
-    fn does_not_flag_trailing_slash_variant_as_a_duplicate() {
+    fn flags_distinct_trailing_slash_resources_as_duplicates() {
         let pages = vec![
             json!({"url": "https://a.com/page", "title": [{"title": "Page"}], "word_count": 100, "content_simhash": 12345u64, "heading_hash": 999u64}),
             json!({"url": "https://a.com/page/", "title": [{"title": "Page"}], "word_count": 100, "content_simhash": 12345u64, "heading_hash": 999u64}),
         ];
-        assert!(find_duplicate_groups(&pages).is_empty());
+        let groups = find_duplicate_groups(&pages);
+        assert_eq!(
+            groups.iter().find(|g| g.kind == "content").unwrap().pages.len(),
+            2
+        );
+        assert_eq!(
+            groups.iter().find(|g| g.kind == "headings").unwrap().pages.len(),
+            2
+        );
     }
 
     #[test]
-    fn trailing_slash_variant_collapses_into_the_real_duplicate_cluster() {
+    fn trailing_slash_variant_remains_in_the_real_duplicate_cluster() {
         let pages = vec![
             json!({"url": "https://a.com/page", "title": [{"title": "Page"}], "word_count": 100, "content_simhash": 12345u64, "heading_hash": 999u64}),
             json!({"url": "https://a.com/page/", "title": [{"title": "Page"}], "word_count": 100, "content_simhash": 12345u64, "heading_hash": 999u64}),
@@ -266,10 +275,10 @@ mod tests {
 
         let groups = find_duplicate_groups(&pages);
         let content_group = groups.iter().find(|g| g.kind == "content").unwrap();
-        assert_eq!(content_group.pages.len(), 2);
+        assert_eq!(content_group.pages.len(), 3);
 
         let heading_group = groups.iter().find(|g| g.kind == "headings").unwrap();
-        assert_eq!(heading_group.pages.len(), 2);
+        assert_eq!(heading_group.pages.len(), 3);
     }
 
     #[test]

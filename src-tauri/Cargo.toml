@@ -1,11 +1,11 @@
 [package]
 name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.1"
+description = "Onwebs SEO & GEO — desktop SEO crawler and GEO/AI-search toolkit"
+authors = ["Onwebs"]
 license = ""
 repository = ""
-default-run = "app"
+default-run = "OnwebsSEO"
 edition = "2021"
 rust-version = "1.88"
 
@@ -13,6 +13,10 @@ rust-version = "1.88"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[[bin]]
+name = "OnwebsSEO"
+path = "src/main.rs"
 
 [lib]
 name = "app_lib"
@@ -29,6 +33,11 @@ serde_json = "*"
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2.10", features = [] }
 reqwest = { version = "0.12.28", default-features = false, features = [ "blocking", "json", "rustls-tls", "gzip", "deflate", "brotli", "stream", "charset", "http2" ] }
+quick-xml = "0.38.3"
+flate2 = "1.1.2"
+# Response bodies are decompressed by hand so the wire size can be measured;
+# see helpers/content_encoding.rs.
+brotli = "8.0.2"
 tokio = { version = "1.47.1", features = ["full"] }
 scraper = "*"
 url = "2.5.7"

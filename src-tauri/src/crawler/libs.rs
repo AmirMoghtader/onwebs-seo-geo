@@ -22,6 +22,19 @@ use crate::settings::settings::{load_settings, Settings};
 
 use super::crawler;
 
+#[cfg(unix)]
+async fn secure_secret_file(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .map_err(|e| format!("Failed to secure credential file: {}", e))
+}
+
+#[cfg(not(unix))]
+async fn secure_secret_file(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiKeys {
     pub page_speed_key: String,
@@ -260,6 +273,7 @@ pub async fn load_api_keys() -> Result<ApiKeys, String> {
             .await
             .map_err(|e| format!("Failed to write default config file: {}", e))?;
     }
+    secure_secret_file(&config_file).await?;
 
     let config_content = fs::read_to_string(&config_file).await.map_err(|e| {
         format!(
@@ -271,9 +285,6 @@ pub async fn load_api_keys() -> Result<ApiKeys, String> {
 
     let api_keys: ApiKeys =
         toml::from_str(&config_content).map_err(|e| format!("Failed to parse config: {}", e))?;
-
-    // Only print the struct representation for debugging
-    println!("Loaded API keys: {:?}", api_keys);
 
     Ok(api_keys)
 }
@@ -540,6 +551,7 @@ pub async fn set_search_console_credentials(credentials: Credentials) -> Result<
     if let Err(e) = fs::write(&secret_file, json_data).await {
         return Err(format!("Failed to write client secret: {}", e));
     }
+    secure_secret_file(&secret_file).await?;
 
     println!("Client secret written to: {}", secret_file.display());
 
@@ -898,6 +910,7 @@ pub async fn set_google_analytics_credentials(credentials: GA4Credentials) -> Re
     fs::write(&file_path, json)
         .await
         .map_err(|e| format!("Failed to write GA4 credentials: {}", e))?;
+    secure_secret_file(&file_path).await?;
 
     // Also update the legacy ga_id.json for backward compatibility if needed
     let ga_id_path = config_dir.join("ga_id.json");
@@ -933,6 +946,7 @@ pub async fn read_ga4_credentials_file() -> Result<GA4Credentials, String> {
             .await
             .map_err(|e| format!("Failed to write default GA4 credentials file: {}", e))?;
     }
+    secure_secret_file(&file_path).await?;
 
     let content = fs::read_to_string(&file_path)
         .await
@@ -1257,6 +1271,10 @@ pub async fn set_microsoft_clarity_credentials(
     let config_dir = config_dir.data_dir();
     let file_path = config_dir.join("clarity.toml");
 
+    fs::create_dir_all(config_dir)
+        .await
+        .map_err(|e| format!("Failed to create credential directory: {}", e))?;
+
     let credentials = ClarityCredentials { endpoint, token };
 
     // Serialize to TOML string
@@ -1267,8 +1285,9 @@ pub async fn set_microsoft_clarity_credentials(
     if let Err(e) = fs::write(&file_path, &toml_str).await {
         return Err(format!("Failed to write Microsoft Clarity ID: {}", e));
     }
+    secure_secret_file(&file_path).await?;
 
-    Ok(toml_str)
+    Ok("saved".to_string())
 }
 
 // ------ GET THE MICROSOFTY CLARITY CREDENTIALS
@@ -1283,16 +1302,12 @@ pub async fn get_microsoft_clarity_credentials() -> Result<Vec<String>, String> 
         .await
         .map_err(|e| format!("Failed to read Microsoft Clarity ID file: {}", e))?;
 
-    println!("File content: {:#?}", file_toml);
-
     let credentials: ClarityCredentials =
         toml::from_str(&file_toml).map_err(|e| format!("Failed to parse credentials: {}", e))?;
 
     let mut creds = Vec::new();
     creds.push(credentials.endpoint);
     creds.push(credentials.token);
-
-    println!("Clarity Credentials:{:#?}", creds);
 
     Ok(creds)
 }
@@ -1306,8 +1321,6 @@ pub async fn get_microsoft_clarity_data() -> Result<Vec<Value>, String> {
     let token = credentials_str[1].clone(); // Get token from second element
 
     let credentials = ClarityCredentials { endpoint, token };
-
-    println!("Making the API call with credentials: {:?}", &credentials);
 
     let client = reqwest::Client::new();
 
@@ -1340,8 +1353,6 @@ pub async fn get_microsoft_clarity_data() -> Result<Vec<Value>, String> {
     let mut response_data = Vec::new();
 
     response_data.push(json_response);
-
-    println!("Response: {:#?}", response_data);
 
     Ok(response_data)
 }

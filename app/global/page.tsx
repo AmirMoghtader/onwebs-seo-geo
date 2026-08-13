@@ -101,6 +101,57 @@ export default function Page() {
   }, [handleSearchChange]);
 
   // Handle domain crawl
+  // Everything a previous crawl left behind. Starting a crawl and pressing
+  // Clear have to wipe exactly the same things, so they share one function
+  // rather than two lists that drift apart.
+  const resetCrawlResults = useCallback(() => {
+    setSelectedTableURL([]);
+    setIssuesData([]);
+    clearDomainCrawlData();
+    setRobotsBlocked([]);
+    setFavicon("");
+    setFinishedDeepCrawl(false);
+    setIsFinishedDeepCrawl(false);
+    setIsPaused(false);
+    setIsStopped(false);
+    useGlobalCrawlStore.setState({
+      aggregatedData: {
+        images: [], scripts: [], css: [], internalLinks: [], externalLinks: [],
+        keywords: [], redirects: [], cwv: [], files: [], customSearch: [],
+      },
+      tableFilter: null,
+      tableUrlFilter: null,
+      inlinkCounts: {},
+      brokenLinks: {},
+      streamedCrawledPages: 0,
+      streamedTotalPages: 0,
+    });
+    useGlobalCrawlStore.getState().setFinalCrawlStats?.(null);
+  }, [
+    setSelectedTableURL,
+    setIssuesData,
+    clearDomainCrawlData,
+    setRobotsBlocked,
+    setFavicon,
+    setFinishedDeepCrawl,
+    setIsFinishedDeepCrawl,
+    setIsPaused,
+    setIsStopped,
+  ]);
+
+  /// Screaming Frog's Clear: empty the results and be ready for the next
+  /// crawl, without quitting the app.
+  const handleClearCrawl = useCallback(async () => {
+    resetCrawlResults();
+    try {
+      // The stored rows go too, otherwise the next launch reloads the crawl
+      // the user just cleared.
+      await invoke("clear_crawl_data_command");
+    } catch (error) {
+      console.error("Failed to clear stored crawl data:", error);
+    }
+  }, [resetCrawlResults]);
+
   const handleDomainCrawl = async (url: string) => {
     try {
       if (sessionStorage.getItem("crawlNumber")) {
@@ -112,17 +163,9 @@ export default function Page() {
         sessionStorage.setItem("crawlNumber", "1");
       }
 
-      setSelectedTableURL([]);
+      resetCrawlResults();
       setDomainCrawlLoading(true);
-      setIssuesData([]);
-      clearDomainCrawlData();
-      setRobotsBlocked([]);
-      setFavicon("");
       setIsGlobalCrawling(true);
-      setFinishedDeepCrawl(false);
-      setIsFinishedDeepCrawl(false);
-      setIsPaused(false);
-      setIsStopped(false);
 
       await fetchMaxUrlsStored();
 
@@ -252,8 +295,28 @@ export default function Page() {
       // scores into the live tables so they show up without a manual refresh.
       (async () => {
         try {
-          const scores: Record<string, number> =
-            (await invoke("get_link_scores_command")) || {};
+          // Ask only for the URLs the tables actually hold. The backend caps a
+          // single request at MAX_IPC_PAGE_SIZE (5000), so send them in chunks
+          // instead of pulling every score in the database through IPC.
+          const urls = Array.from(
+            new Set(
+              (useGlobalCrawlStore.getState().crawlData || [])
+                .map((row: any) => row?.url)
+                .filter(
+                  (u: any): u is string => typeof u === "string" && u.length > 0,
+                ),
+            ),
+          );
+          if (urls.length === 0) return;
+
+          const scores: Record<string, number> = {};
+          for (let i = 0; i < urls.length; i += 5000) {
+            const batch: Record<string, number> =
+              (await invoke("get_link_scores_command", {
+                urls: urls.slice(i, i + 5000),
+              })) || {};
+            Object.assign(scores, batch);
+          }
           if (Object.keys(scores).length === 0) return;
 
           const store = useGlobalCrawlStore.getState();
@@ -270,12 +333,12 @@ export default function Page() {
           const [internalLinks, externalLinks] = await Promise.all([
             invoke("get_links_page_command", {
               dataType: "internal_links",
-              limit: 0,
+              limit: 5000,
               offset: 0,
             }),
             invoke("get_links_page_command", {
               dataType: "external_links",
-              limit: 0,
+              limit: 5000,
               offset: 0,
             }),
           ]);
@@ -285,6 +348,51 @@ export default function Page() {
           });
         } catch (error) {
           console.error("Failed to refresh link scores:", error);
+        }
+      })();
+
+      // Assets — images, scripts, stylesheets, documents — used to be loaded
+      // only when the Internal tab was opened, but the Overview pane is always
+      // on screen and counts them too. Without this it reported 0 images and 0
+      // stylesheets until you happened to click that one tab.
+      (async () => {
+        try {
+          const [images, scripts, css, files] = await Promise.all([
+            invoke("get_aggregated_crawl_data_command", { dataType: "images" }),
+            invoke("get_aggregated_crawl_data_command", { dataType: "scripts" }),
+            invoke("get_aggregated_crawl_data_command", {
+              dataType: "stylesheets",
+            }),
+            invoke("get_aggregated_crawl_data_command", {
+              dataType: "files",
+            }).catch(() => []),
+          ]);
+          useGlobalCrawlStore.getState().setAggregatedData({
+            images: (images as any[]) || [],
+            scripts: (scripts as any[]) || [],
+            css: (css as any[]) || [],
+            files: (files as any[]) || [],
+          });
+        } catch (error) {
+          console.error("Failed to load crawl assets:", error);
+        }
+      })();
+
+      // Inlinks can only be counted by inverting the whole link graph, which
+      // is a property of the crawl and not of any one page. The backend does
+      // it in one pass; both the table and the details drawer read the result.
+      (async () => {
+        try {
+          const [counts, broken] = await Promise.all([
+            invoke("get_inlink_counts_command"),
+            invoke("get_broken_links_command"),
+          ]);
+          useGlobalCrawlStore.setState({
+            inlinkCounts: counts || {},
+            brokenLinks: broken || {},
+          });
+        } catch (error) {
+          console.error("Failed to load link graph data:", error);
         }
       })();
 
@@ -385,7 +493,10 @@ export default function Page() {
 
   return (
     <main className="flex h-full w-full">
-      <InputZone handleDomainCrawl={handleDomainCrawl} />
+      <InputZone
+        handleDomainCrawl={handleDomainCrawl}
+        handleClearCrawl={handleClearCrawl}
+      />
       <section className="w-full min-w-0 border-none h-full dark:bg-brand-dark shadow-none rounded-md">
         <div className="hidden">
           <input

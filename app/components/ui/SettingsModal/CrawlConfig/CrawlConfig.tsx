@@ -96,6 +96,7 @@ const CrawlConfig = ({ onClose }: any) => {
   const [include, setInclude] = useState("");
   const [exclude, setExclude] = useState("");
   const [userAgent, setUserAgent] = useState(UA_PRESETS[0].value);
+  const [robotsUserAgent, setRobotsUserAgent] = useState("OnwebsSEO");
   const [concurrent, setConcurrent] = useState(5);
   const [baseDelay, setBaseDelay] = useState(1500);
   const [maxDepth, setMaxDepth] = useState(50);
@@ -109,7 +110,7 @@ const CrawlConfig = ({ onClose }: any) => {
   useEffect(() => {
     (async () => {
       try {
-        const s: any = await invoke("get_system");
+        const s: any = await invoke("get_settings_command");
         if (!s) return;
         setInclude((s.include_patterns || []).join("\n"));
         setExclude((s.exclude_patterns || []).join("\n"));
@@ -117,8 +118,12 @@ const CrawlConfig = ({ onClose }: any) => {
         setListUrls((s.list_urls || []).join("\n"));
         if (typeof s.max_retries === "number") setMaxRetries(s.max_retries);
         if (typeof s.client_timeout === "number") setClientTimeout(s.client_timeout);
-        if (Array.isArray(s.user_agents) && s.user_agents[0])
+        if (typeof s.http_user_agent === "string" && s.http_user_agent)
+          setUserAgent(s.http_user_agent);
+        else if (Array.isArray(s.user_agents) && s.user_agents[0])
           setUserAgent(s.user_agents[0]);
+        if (typeof s.robots_user_agent === "string" && s.robots_user_agent)
+          setRobotsUserAgent(s.robots_user_agent);
         if (typeof s.concurrent_requests === "number") setConcurrent(s.concurrent_requests);
         if (typeof s.base_delay === "number") setBaseDelay(s.base_delay);
         if (typeof s.max_depth === "number") setMaxDepth(s.max_depth);
@@ -151,7 +156,8 @@ const CrawlConfig = ({ onClose }: any) => {
             .filter(Boolean),
           include_patterns: include,
           exclude_patterns: exclude,
-          user_agents: [userAgent],
+          http_user_agent: userAgent,
+          robots_user_agent: robotsUserAgent,
           concurrent_requests: concurrent,
           base_delay: baseDelay,
           max_depth: maxDepth,
@@ -323,6 +329,20 @@ const CrawlConfig = ({ onClose }: any) => {
                 value={userAgent}
                 onChange={(e) => setUserAgent(e.target.value)}
                 rows={4}
+                spellCheck={false}
+                className="w-full font-mono text-[11px] border rounded p-2 dark:border-brand-dark bg-white dark:bg-brand-darker"
+                style={{ direction: "ltr", textAlign: "left" }}
+              />
+              <h3 className="text-xs font-bold text-slate-700 dark:text-white/80 mt-4 mb-1">
+                Robots User-Agent
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-white/50 mb-2">
+                گروه robots.txt که برای تصمیم Allow/Disallow استفاده می‌شود؛
+                مستقل از هدر User-Agent درخواست HTTP.
+              </p>
+              <input
+                value={robotsUserAgent}
+                onChange={(e) => setRobotsUserAgent(e.target.value)}
                 spellCheck={false}
                 className="w-full font-mono text-[11px] border rounded p-2 dark:border-brand-dark bg-white dark:bg-brand-darker"
                 style={{ direction: "ltr", textAlign: "left" }}

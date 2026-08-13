@@ -62,21 +62,8 @@ type DeepCrawlHistory = {
 
 type DeleteTarget = { type: "single"; id: number } | { type: "bulk" } | null;
 
-// What "reopening a past crawl" can honestly mean here.
-//
-// deep_crawls_history (deep_crawl.db) stores 37 summary counters per crawl and
-// nothing else — no page rows, and no id tying an entry to the pages it came
-// from. The page rows live in one table, domain_crawl in deep_crawl_batches.db,
-// which domain_crawl_command wipes at the start of every crawl. So exactly one
-// crawl's rows exist on disk at any moment: the most recent one.
-//
-// Clicking that one is a real restore — the rows come back out of SQLite and
-// every DB-backed table refills, which is what makes the history useful after
-// an app restart (the store is memory-only and starts empty). Clicking anything
-// older can only ever show the stored summary, so it says exactly that instead
-// of pretending. Keeping a crawl beyond the next one still means saving it to a
-// file first, via File > Save Crawl.
-type StoredCrawl = { host: string; pages: number };
+// New crawls keep a complete SQLite snapshot keyed by this history id. Legacy
+// history rows remain visible, but may only have their summary counters.
 
 // History rows hold "https://onwebs.ir/", crawl rows hold page URLs — compare hosts.
 const hostOf = (value: string): string => {
@@ -97,7 +84,6 @@ const HistoryDomainCrawls = () => {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [storedCrawl, setStoredCrawl] = useState<StoredCrawl | null>(null);
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const crawlSessionTotalArray = useGlobalCrawlStore((state) => state.crawlSessionTotalArray);
   const [crawlCompleted, setCrawlCompleted] = useState<boolean>(false);
@@ -119,7 +105,6 @@ const HistoryDomainCrawls = () => {
       // Small delay to ensure the backend has finished writing the history record
       setTimeout(() => {
         fetchData();
-        probeStoredCrawl();
       }, 1000);
     });
 
@@ -142,40 +127,12 @@ const HistoryDomainCrawls = () => {
     }
   };
 
-  // Ask domain_crawl which crawl it is still holding: the row count, plus the
-  // host of any one row. That pair is all we get to identify it — the table has
-  // no crawl id — and it is enough to tell whether a history entry's pages are
-  // still on disk.
-  const probeStoredCrawl = async () => {
-    try {
-      const pages = (await invoke("get_crawl_total_count_command", {
-        search: null,
-      })) as number;
-      if (!pages) {
-        setStoredCrawl(null);
-        return;
-      }
-
-      const firstRow = (await invoke("get_crawl_page_command", {
-        limit: 1,
-        offset: 0,
-        search: null,
-      })) as any[];
-      const url = firstRow?.[0]?.url;
-
-      setStoredCrawl(url ? { host: hostOf(url), pages } : null);
-    } catch {
-      setStoredCrawl(null);
-    }
-  };
-
   // Fetch initial data and create table when the component mounts
   useEffect(() => {
     const initialize = async () => {
       try {
         await invoke("create_domain_results_table");
         await fetchData();
-        await probeStoredCrawl();
       } catch (error) {
         setError(
           "Failed to initialize crawl history. Check the console for details.",
@@ -194,19 +151,6 @@ const HistoryDomainCrawls = () => {
     [crawlHistory],
   );
 
-  // The one entry whose pages are still in domain_crawl. Re-crawling the same
-  // domain to the same page count would match twice, so take the newest — the
-  // rows on disk always belong to the most recent run.
-  const restorableId = useMemo(() => {
-    if (!storedCrawl) return null;
-    const match = sortedHistory.find(
-      (entry) =>
-        entry.pages === storedCrawl.pages &&
-        hostOf(entry.domain) === storedCrawl.host,
-    );
-    return match?.id ?? null;
-  }, [sortedHistory, storedCrawl]);
-
   // Same store replacement File > Open Crawl does, sourced from SQLite instead
   // of a file.
   const restoreCrawl = async (entry: DeepCrawlHistory) => {
@@ -214,15 +158,16 @@ const HistoryDomainCrawls = () => {
     setRestoringId(entry.id);
 
     try {
+      const restoredPageCount = (await invoke("restore_crawl_snapshot_command", {
+        sessionId: entry.id,
+      })) as number;
       const rows = (await invoke("get_crawl_page_command", {
-        limit: entry.pages,
+        limit: Math.min(restoredPageCount, 5000),
         offset: 0,
         search: null,
       })) as any[];
 
       if (!rows?.length) {
-        // The crawl was wiped between the probe and this click.
-        setStoredCrawl(null);
         toast.error("نتایج صفحه‌های این کراول دیگر در دیتابیس موجود نیست");
         return;
       }
@@ -239,12 +184,12 @@ const HistoryDomainCrawls = () => {
       const [internalLinks, externalLinks, stats] = await Promise.all([
         invoke("get_links_page_command", {
           dataType: "internal_links",
-          limit: 0,
+          limit: 5000,
           offset: 0,
         }).catch(() => []),
         invoke("get_links_page_command", {
           dataType: "external_links",
-          limit: 0,
+          limit: 5000,
           offset: 0,
         }).catch(() => []),
         invoke("get_crawl_summary_stats_command").catch(() => null),
@@ -266,8 +211,13 @@ const HistoryDomainCrawls = () => {
       toast.success(`نتایج کراول بازیابی شد — ${rows.length} صفحه`, {
         description: hostOf(entry.domain),
       });
-    } catch (err) {
-      toast.error("بازیابی نتایج کراول ناموفق بود");
+    } catch (err: any) {
+      const message = String(err || "");
+      if (message.includes("No full snapshot")) {
+        toast.info("این رکورد قدیمی فقط خلاصهٔ کراول را دارد و snapshot کامل ندارد");
+      } else {
+        toast.error("بازیابی نتایج کراول ناموفق بود");
+      }
     } finally {
       setRestoringId(null);
     }
@@ -282,7 +232,7 @@ const HistoryDomainCrawls = () => {
         : [...prev, index],
     );
 
-    if (willExpand && entry.id !== undefined && entry.id === restorableId) {
+    if (willExpand && entry.id !== undefined) {
       restoreCrawl(entry);
     }
   };

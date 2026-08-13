@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -12,16 +12,9 @@ const MAX_STATUS_CACHE_SIZE: usize = 50_000;
 const DOMAIN_TRACKER_TTL_SECS: u64 = 300; // 5 minutes
 
 use futures::{stream, StreamExt};
-use rand::seq::IndexedRandom;
-use reqwest::{
-    header::{
-        HeaderMap, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CACHE_CONTROL, CONNECTION, DNT,
-        UPGRADE_INSECURE_REQUESTS,
-    },
-    Client, Url,
-};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, Semaphore};
+use tokio::sync::{Mutex, OnceCell, Semaphore};
 use tokio::time::{sleep, timeout};
 
 use crate::domain_crawler::helpers::anchor_links::InternalExternalLinks;
@@ -46,9 +39,13 @@ pub struct LinkCheckConfig {
 impl From<&Settings> for LinkCheckConfig {
     fn from(settings: &Settings) -> Self {
         Self {
-            concurrent_requests: settings.links_max_concurrent_requests.max(50), // Enforce minimum 50
-            min_delay_ms: settings.links_retry_delay,
-            max_delay_ms: settings.links_retry_delay * 2,
+            // Zero cannot drive buffer_unordered or a Semaphore; every other value is
+            // authoritative and must not be silently raised to a high concurrency.
+            concurrent_requests: settings.links_max_concurrent_requests.max(1),
+            // Retry backoff is not normal crawl pacing. Per-domain pacing starts at zero
+            // and is enabled only after a genuine 429/503 response.
+            min_delay_ms: 0,
+            max_delay_ms: 0,
             max_retries: settings.links_max_retries,
             request_timeout_secs: settings.links_request_timeout,
             jitter_factor: settings.links_jitter_factor,
@@ -59,6 +56,50 @@ impl From<&Settings> for LinkCheckConfig {
             pool_idle_timeout_secs: settings.links_pool_idle_timeout,
             pool_max_idle_per_host: settings.links_max_idle_per_host,
         }
+    }
+}
+
+type CachedStatus = (Option<u16>, Option<String>);
+
+/// A bounded FIFO cache. HashMap iteration order is not an age signal, so tracking
+/// insertion order separately avoids arbitrary mass eviction and repeated shrink/grow
+/// cycles during large crawls.
+#[derive(Default)]
+struct StatusCache {
+    entries: HashMap<String, CachedStatus>,
+    insertion_order: VecDeque<String>,
+}
+
+impl StatusCache {
+    fn get(&self, key: &str) -> Option<CachedStatus> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, value: CachedStatus) {
+        self.insert_with_limit(key, value, MAX_STATUS_CACHE_SIZE);
+    }
+
+    fn insert_with_limit(&mut self, key: String, value: CachedStatus, limit: usize) {
+        if limit == 0 {
+            return;
+        }
+
+        if let Some(existing) = self.entries.get_mut(&key) {
+            *existing = value;
+            return;
+        }
+
+        while self.entries.len() >= limit {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                // Defensive recovery if the order index ever gets out of sync.
+                self.entries.clear();
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+
+        self.insertion_order.push_back(key.clone());
+        self.entries.insert(key, value);
     }
 }
 
@@ -74,10 +115,10 @@ pub struct SharedLinkChecker {
     semaphore: Arc<Semaphore>,
     pub config: LinkCheckConfig,
     /// Global cache of link statuses: URL -> (StatusCode, Error)
-    status_cache: Arc<Mutex<HashMap<String, (Option<u16>, Option<String>)>>>,
-    /// Tracks URLs that are currently being fetched, so other tasks can wait
-    /// instead of firing duplicate HTTP requests
-    in_flight: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    status_cache: Arc<Mutex<StatusCache>>,
+    /// Per-URL single-flight cells. OnceCell has no lost-wakeup window: a waiter
+    /// arriving after completion reads the initialized result immediately.
+    in_flight: Arc<Mutex<HashMap<String, Arc<OnceCell<CachedStatus>>>>>,
     /// Global URL → HTTP status code registry shared with the crawler.
     /// URLs that the crawler has already visited are recorded here so the
     /// link checker can return their status instantly without an HTTP request.
@@ -98,7 +139,7 @@ impl SharedLinkChecker {
             domain_tracker: Arc::new(DomainTracker::new(&config)),
             semaphore: Arc::new(Semaphore::new(config.concurrent_requests)),
             config,
-            status_cache: Arc::new(Mutex::new(HashMap::new())),
+            status_cache: Arc::new(Mutex::new(StatusCache::default())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             url_status_registry,
         }
@@ -235,57 +276,80 @@ impl DomainTracker {
         }
     }
 
-    fn get_delay_for(&self, domain: &str) -> Result<Duration, Duration> {
+    fn get_delay_for(&self, domain: &str) -> Duration {
         let base_delay = {
             let delays = self.delays.lock().unwrap();
             delays
                 .get(domain)
                 .copied()
-                .unwrap_or_else(|| Duration::from_millis(self.config.min_delay_ms.max(200))) // Minimum 200ms spacing
+                .unwrap_or_default()
         };
-        
+
+        // There is deliberately no normal per-domain delay. links_retry_delay is
+        // exclusively retry/backoff configuration, not a hidden crawl speed limit.
+        if base_delay.is_zero() {
+            return Duration::ZERO;
+        }
+
         let mut last_requests = self.last_request.lock().unwrap();
         let now = Instant::now();
         let last_req = last_requests.entry(domain.to_string()).or_insert(now);
-        
+
         let target_time = *last_req + base_delay;
         let wait_time = if now < target_time {
             target_time.duration_since(now)
         } else {
-            Duration::from_millis(0)
+            Duration::ZERO
         };
-        
-        // If wait time is too long (e.g. > 5 seconds), abort the request to prevent
-        // compounding serialized delays that freeze the crawler threads.
-        if wait_time > Duration::from_secs(5) {
-            return Err(wait_time);
-        }
-        
+
+        // Reserve this request's slot. A long server-driven backoff is waited out; it
+        // must never be converted into a fabricated HTTP 429 result.
         *last_req = std::cmp::max(now, target_time);
-        
-        Ok(wait_time)
+
+        wait_time
     }
 
     fn update_delay_for(&self, domain: &str, response: &reqwest::Response) {
         let mut delays = self.delays.lock().unwrap();
         if response.status() == 429 || response.status() == 503 {
-            // Increase delay aggressively for this domain
-            let current = delays
-                .entry(domain.to_string())
-                .or_insert(Duration::from_millis(self.config.min_delay_ms.max(1000)));
-            *current = (*current * 2).min(Duration::from_secs(30));
-            tracing::warn!("Link checker: 429 from {}, increasing per-domain delay to {:?}", domain, *current);
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or_default();
+            let configured_backoff = Duration::from_millis(self.config.retry_delay_ms.max(1));
+            let next = delays
+                .get(domain)
+                .copied()
+                .map(|current| current.saturating_mul(2))
+                .unwrap_or(configured_backoff)
+                .max(retry_after)
+                .min(Duration::from_secs(30));
+            delays.insert(domain.to_string(), next);
+            tracing::warn!(
+                "Link checker: {} from {}, setting per-domain backoff to {:?}",
+                response.status(),
+                domain,
+                next
+            );
         } else if response.status().is_success() {
-            // Gradually decrease delay — very slowly to avoid re-triggering
-            if let Some(delay) = delays.get_mut(domain) {
-                // Only decrease by 25% each time instead of halving
-                let new_delay = Duration::from_millis((delay.as_millis() as u64 * 3) / 4);
-                *delay = new_delay.max(Duration::from_millis(self.config.retry_delay_ms));
+            if let Some(current) = delays.get(domain).copied() {
+                let new_delay = current.mul_f32(0.75);
+                if new_delay < Duration::from_millis(50) {
+                    delays.remove(domain);
+                } else {
+                    delays.insert(domain.to_string(), new_delay);
+                }
             }
         }
     }
 
     fn should_throttle(&self, domain: &str) -> bool {
+        if self.config.max_requests_per_domain == 0 {
+            return false;
+        }
         let mut counts = self.request_counts.lock().unwrap();
         let count = counts.entry(domain.to_string()).or_insert(0);
         *count += 1;
@@ -327,35 +391,19 @@ pub async fn get_links_status_code_from_settings(
     checker.check_links(links, base_url, page).await
 }
 
-fn build_client(config: &LinkCheckConfig, _settings: &Settings, _user_agent: Option<String>) -> Client {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7".parse().unwrap());
-    headers.insert(ACCEPT_LANGUAGE, "en-US,en;q=0.9".parse().unwrap());
-    headers.insert(ACCEPT_ENCODING, "gzip, deflate, br".parse().unwrap());
-    headers.insert(CONNECTION, "keep-alive".parse().unwrap());
-    headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
-    headers.insert(DNT, "1".parse().unwrap());
-    headers.insert(UPGRADE_INSECURE_REQUESTS, "1".parse().unwrap());
-    headers.insert("Sec-Ch-Ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"".parse().unwrap());
-    headers.insert("Sec-Ch-Ua-Mobile", "?0".parse().unwrap());
-    headers.insert("Sec-Ch-Ua-Platform", "\"Windows\"".parse().unwrap());
-    headers.insert("Sec-Fetch-Dest", "document".parse().unwrap());
-    headers.insert("Sec-Fetch-Mode", "navigate".parse().unwrap());
-    headers.insert("Sec-Fetch-Site", "none".parse().unwrap());
-    headers.insert("Sec-Fetch-User", "?1".parse().unwrap());
-
-    let spoofed_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".to_string();
+fn build_client(config: &LinkCheckConfig, settings: &Settings, user_agent: Option<String>) -> Client {
+    let configured_user_agent = user_agent
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| settings.http_user_agent.trim().to_string());
 
     Client::builder()
         .timeout(Duration::from_secs(config.request_timeout_secs))
         .connect_timeout(Duration::from_secs(config.connection_timeout_secs))
         .pool_idle_timeout(Duration::from_secs(config.pool_idle_timeout_secs))
         .pool_max_idle_per_host(config.pool_max_idle_per_host)
-        .user_agent(spoofed_ua)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .default_headers(headers)
+        .user_agent(configured_user_agent)
+        .redirect(reqwest::redirect::Policy::limited(settings.redirect_policy))
         .danger_accept_invalid_certs(false)
-        .http1_only()
         .build()
         .expect("Failed to create HTTP client")
 }
@@ -396,6 +444,15 @@ fn prepare_links(
         )
 }
 
+fn status_cache_key(url: &Url) -> String {
+    let mut normalized = url.clone();
+    // Fragments are client-side document locations and never change the HTTP
+    // resource being checked. Treating each fragment as a separate key causes
+    // duplicate requests and inconsistent registry/cache hits.
+    normalized.set_fragment(None);
+    normalized.to_string()
+}
+
 async fn process_single_link(
     client: Arc<Client>,
     semaphore: Arc<Semaphore>,
@@ -410,8 +467,8 @@ async fn process_single_link(
     target: Option<String>,
     is_internal: bool,
     config: LinkCheckConfig,
-    status_cache: Arc<Mutex<HashMap<String, (Option<u16>, Option<String>)>>>,
-    in_flight: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    status_cache: Arc<Mutex<StatusCache>>,
+    in_flight: Arc<Mutex<HashMap<String, Arc<OnceCell<CachedStatus>>>>>,
     url_status_registry: Arc<DashMap<String, u16>>,
 ) -> Option<(LinkStatus, bool)> {
     let full_url = match if is_internal {
@@ -426,7 +483,7 @@ async fn process_single_link(
         }
     };
 
-    let full_url_str = full_url.to_string();
+    let full_url_str = status_cache_key(&full_url);
 
     {
         let mut seen = seen_urls.lock().unwrap();
@@ -454,7 +511,9 @@ async fn process_single_link(
         ));
     }
 
-    let domain = full_url.domain().unwrap_or("").to_string();
+    // host_str covers both DNS names and IP literals; Url::domain() returns None
+    // for IP hosts and would incorrectly merge all of them into one throttle bucket.
+    let domain = full_url.host_str().unwrap_or("").to_ascii_lowercase();
 
     let relative_path = is_internal.then(|| link.clone());
     let anchor_text = Some(anchor.clone());
@@ -486,7 +545,7 @@ async fn process_single_link(
     // 2) Check the link-checker's own status cache (populated by previous link checks)
     let cached_result = {
         let cache = status_cache.lock().await;
-        cache.get(&full_url_str).cloned()
+        cache.get(&full_url_str)
     };
 
     if let Some((status, error)) = cached_result {
@@ -506,118 +565,82 @@ async fn process_single_link(
         ));
     }
 
-    // Check if another task is already fetching this URL (in-flight deduplication)
-    // If so, wait for it to finish and use the cached result instead of making a duplicate request
-    let maybe_notify = {
-        let mut flight_map = in_flight.lock().await;
-        if let Some(notify) = flight_map.get(&full_url_str) {
-            // Another task is already fetching this URL — grab its Notify handle
-            Some(notify.clone())
-        } else {
-            // We're the first — mark this URL as in-flight
-            flight_map.insert(full_url_str.clone(), Arc::new(Notify::new()));
-            None
-        }
-    };
-
-    // If another task is fetching, wait for it and return the cached result
-    if let Some(notify) = maybe_notify {
-        // Wait for the fetching task to signal completion (with a timeout to avoid deadlocks)
-        tokio::select! {
-            _ = notify.notified() => {},
-            _ = sleep(Duration::from_secs(config.request_timeout_secs + 5)) => {
-                tracing::warn!("Timed out waiting for in-flight fetch of {}", full_url_str);
-            },
-        }
-
-        // Re-check cache — the other task should have populated it
-        let cached_result = {
-            let cache = status_cache.lock().await;
-            cache.get(&full_url_str).cloned()
-        };
-
-        if let Some((status, error)) = cached_result {
-            return Some((
-                LinkStatus {
-                    base_url: (*base_url).clone(),
-                    url: full_url_str,
-                    relative_path,
-                    status,
-                    error,
-                    anchor_text,
-                    rel,
-                    title,
-                    target,
-                },
-                is_internal,
-            ));
-        }
-        // If somehow cache is still empty (shouldn't happen), fall through to fetch
-    }
-
-    // Check if we should throttle this domain
-    if domain_tracker.should_throttle(&domain) {
-        // Clean up in-flight entry and notify waiters
-        let notify = {
-            let mut flight_map = in_flight.lock().await;
-            flight_map.remove(&full_url_str)
-        };
-        if let Some(n) = notify {
-            n.notify_waiters();
-        }
+    // Internal targets are already queued for the primary crawler, which performs
+    // the authoritative GET and records redirects/content. Issuing a speculative
+    // HEAD here doubles origin traffic and can race ahead of crawl discovery. Keep
+    // the complete link record and reconcile its status from persisted crawl rows
+    // after the crawl finishes. Registry/cache hits above remain immediately useful.
+    if is_internal {
         return Some((
             LinkStatus {
                 base_url: (*base_url).clone(),
                 url: full_url_str,
                 relative_path,
                 status: None,
-                error: Some("Throttled: Max requests per domain reached".to_string()),
+                error: None,
                 anchor_text,
                 rel,
                 title,
                 target,
             },
-            is_internal,
+            true,
         ));
     }
 
-    let relative_path = is_internal.then(|| link);
-    let anchor_text = Some(anchor);
+    // A URL has one shared initializer at a time. Unlike Notify, OnceCell cannot
+    // lose a wakeup between checking the cache and beginning to wait.
+    let flight_cell = {
+        let mut flight_map = in_flight.lock().await;
+        flight_map
+            .entry(full_url_str.clone())
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .clone()
+    };
 
-    let result = fetch_with_retry(
-        &client,
-        &full_url_str,
-        &domain,
-        &domain_tracker,
-        Arc::clone(&base_url),
-        relative_path.clone(),
-        anchor_text.clone(),
-        rel,
-        title,
-        target,
-        Arc::clone(&semaphore),
-        &config,
-    )
-    .await;
+    // Close the cache-miss/flight-registration race: the previous initializer may
+    // have published and removed its cell between those two operations.
+    if let Some(cached) = {
+        let cache = status_cache.lock().await;
+        cache.get(&full_url_str)
+    } {
+        let _ = flight_cell.set(cached);
+    }
 
-    // Update Global Cache with bounded eviction.
-    // When the cache exceeds MAX_STATUS_CACHE_SIZE we drop the oldest half to free memory.
-    // This prevents unbounded growth across a 40K+ page crawl where every page's
-    // outbound links would otherwise accumulate here forever.
+    let fetched = flight_cell
+        .get_or_init(|| async {
+            if domain_tracker.should_throttle(&domain) {
+                return (
+                    None,
+                    Some("Throttled: Max requests per domain reached".to_string()),
+                );
+            }
+
+            let result = fetch_with_retry(
+                &client,
+                &full_url_str,
+                &domain,
+                &domain_tracker,
+                Arc::clone(&base_url),
+                relative_path.clone(),
+                anchor_text.clone(),
+                rel.clone(),
+                title.clone(),
+                target.clone(),
+                Arc::clone(&semaphore),
+                &config,
+            )
+            .await;
+            domain_tracker.record_request(&domain);
+            (result.status, result.error)
+        })
+        .await
+        .clone();
+
+    // Publish the initialized value before removing the flight entry. A new caller
+    // will therefore find either this cell or the completed cache entry.
     {
         let mut cache = status_cache.lock().await;
-        if cache.len() >= MAX_STATUS_CACHE_SIZE {
-            // Evict roughly half the entries (the ones inserted earliest in iteration order).
-            // HashMap doesn't preserve insertion order, so we collect keys then remove.
-            let evict_count = cache.len() / 2;
-            let to_evict: Vec<String> = cache.keys().take(evict_count).cloned().collect();
-            for key in to_evict {
-                cache.remove(&key);
-            }
-            // Shrink the backing allocation so the freed memory is actually returned.
-            cache.shrink_to_fit();
-        }
-        cache.insert(full_url_str.clone(), (result.status, result.error.clone()));
+        cache.insert(full_url_str.clone(), fetched.clone());
     }
 
     // Periodically prune stale DomainTracker entries to prevent unbounded growth
@@ -632,18 +655,30 @@ async fn process_single_link(
         }
     }
 
-    // Remove from in-flight and notify all waiting tasks
-    let notify = {
+    {
         let mut flight_map = in_flight.lock().await;
-        flight_map.remove(&full_url_str)
-    };
-    if let Some(n) = notify {
-        n.notify_waiters();
+        let is_same_cell = flight_map
+            .get(&full_url_str)
+            .is_some_and(|current| Arc::ptr_eq(current, &flight_cell));
+        if is_same_cell {
+            flight_map.remove(&full_url_str);
+        }
     }
 
-    domain_tracker.record_request(&domain);
-
-    Some((result, is_internal))
+    Some((
+        LinkStatus {
+            base_url: (*base_url).clone(),
+            url: full_url_str,
+            relative_path,
+            status: fetched.0,
+            error: fetched.1,
+            anchor_text,
+            rel,
+            title,
+            target,
+        },
+        is_internal,
+    ))
 }
 
 async fn fetch_with_retry(
@@ -664,25 +699,9 @@ async fn fetch_with_retry(
     let mut last_error = None;
 
     loop {
-        // Get domain-specific delay
-        let delay = match domain_tracker.get_delay_for(domain) {
-            Ok(d) => d,
-            Err(wait_time) => {
-                // Throttled! Return immediately with 429 to prevent crawler freeze
-                return LinkStatus {
-                    base_url: (*base_url).clone(),
-                    url: url.to_string(),
-                    relative_path: relative_path.clone(),
-                    status: Some(429),
-                    error: Some(format!("Throttled: Rate limit wait time too long ({:?})", wait_time)),
-                    anchor_text: anchor_text.clone(),
-                    rel: rel.clone(),
-                    title: title.clone(),
-                    target: target.clone(),
-                };
-            }
-        };
-        if delay.as_millis() > 0 {
+        // Only genuine server-driven backoff contributes a per-domain delay.
+        let delay = domain_tracker.get_delay_for(domain);
+        if !delay.is_zero() {
             sleep(delay).await;
         }
 
@@ -695,15 +714,17 @@ async fn fetch_with_retry(
             }
         };
 
-        match timeout(
+        let request_result = timeout(
             Duration::from_secs(config.request_timeout_secs),
             try_head_then_get(client, url),
         )
-        .await
-        {
+        .await;
+        // Never hold a scarce request permit while logging or sleeping for retry.
+        drop(permit);
+
+        match request_result {
             Ok(Ok(response)) => {
                 domain_tracker.update_delay_for(domain, &response);
-                drop(permit);
                 return handle_success_response(
                     response,
                     base_url,
@@ -720,7 +741,10 @@ async fn fetch_with_retry(
                 if err_msg.contains("429") {
                     tracing::warn!("Link checker: 429 Too Many Requests for {}", url);
                 } else {
-                    tracing::error!("Link checker: Request error for {}: {}", url, err_msg);
+                    // A dead external link is a finding we report, not a fault
+                    // in this program. Logging it at ERROR buried genuine errors
+                    // under 207 lines of noise on a single crawl.
+                    tracing::debug!("Link checker: unreachable {}: {}", url, err_msg);
                 }
                 last_error = Some(err_msg);
             }
@@ -736,7 +760,10 @@ async fn fetch_with_retry(
         }
 
         // Exponential backoff with jitter
-        let base_delay = config.retry_delay_ms * 2u64.pow(attempt as u32 - 1);
+        let exponent = attempt.saturating_sub(1).min(20) as u32;
+        let base_delay = config
+            .retry_delay_ms
+            .saturating_mul(1_u64 << exponent);
         let jitter =
             (base_delay as f32 * config.jitter_factor * rand::random_range(-1.0..1.0)) as i64;
         let delay = (base_delay as i64 + jitter).max(0) as u64;
@@ -783,17 +810,27 @@ async fn try_head_then_get(
     client: &Client,
     url: &str,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    // Try HEAD request first
     match client.head(url).send().await {
-        Ok(response) => Ok(response),
-        Err(_head_err) => {
-            // Fallback to GET if HEAD fails
+        Ok(head_response) if should_fallback_to_get(head_response.status()) => {
             match client.get(url).send().await {
-                Ok(response) => Ok(response),
-                Err(get_err) => Err(get_err),
+                Ok(get_response) => Ok(get_response),
+                // A real HEAD response is better evidence than discarding its status
+                // because the GET fallback hit a transport error.
+                Err(_) => Ok(head_response),
             }
         }
+        Ok(response) => Ok(response),
+        Err(_) => client.get(url).send().await,
     }
+}
+
+fn should_fallback_to_get(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::FORBIDDEN
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            | reqwest::StatusCode::NOT_IMPLEMENTED
+    )
 }
 
 fn handle_success_response(
@@ -833,4 +870,259 @@ fn is_internal(url_to_check: &str, base_url: &Url) -> bool {
             url_domain.ends_with(base_domain)
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain_crawler::helpers::anchor_links::{LinkTypes, LinksAnchors};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn serve_statuses(statuses: Vec<u16>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let mut requests = Vec::with_capacity(statuses.len());
+            for status in statuses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = vec![0_u8; 8 * 1024];
+                let read = timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                requests.push(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}/resource"), task)
+    }
+
+    fn one_link(url: String, internal: bool) -> InternalExternalLinks {
+        let empty = || LinksAnchors {
+            links: Vec::new(),
+            inlinks: LinkTypes {
+                relative: Vec::new(),
+                absolute: Vec::new(),
+            },
+            anchors: Vec::new(),
+            rels: Vec::new(),
+            titles: Vec::new(),
+            targets: Vec::new(),
+        };
+        let populated = LinksAnchors {
+                links: vec![url.clone()],
+                inlinks: LinkTypes {
+                    relative: Vec::new(),
+                    absolute: vec![url],
+                },
+                anchors: vec!["link".to_string()],
+                rels: vec![None],
+                titles: vec![None],
+                targets: vec![None],
+            };
+        if internal {
+            InternalExternalLinks {
+                internal: populated,
+                external: empty(),
+            }
+        } else {
+            InternalExternalLinks {
+                internal: empty(),
+                external: populated,
+            }
+        }
+    }
+
+    #[test]
+    fn configured_concurrency_is_honored_and_only_zero_is_clamped() {
+        let mut settings = Settings::default();
+        settings.links_max_concurrent_requests = 7;
+        let configured = LinkCheckConfig::from_settings(&settings);
+        assert_eq!(configured.concurrent_requests, 7);
+        assert_eq!(configured.min_delay_ms, 0);
+
+        settings.links_max_concurrent_requests = 0;
+        assert_eq!(LinkCheckConfig::from_settings(&settings).concurrent_requests, 1);
+    }
+
+    #[test]
+    fn status_cache_is_bounded_and_evicts_oldest_entry() {
+        let mut cache = StatusCache::default();
+        cache.insert_with_limit("first".to_string(), (Some(200), None), 2);
+        cache.insert_with_limit("second".to_string(), (Some(201), None), 2);
+        cache.insert_with_limit("third".to_string(), (Some(202), None), 2);
+
+        assert!(cache.get("first").is_none());
+        assert_eq!(cache.get("second").unwrap().0, Some(201));
+        assert_eq!(cache.get("third").unwrap().0, Some(202));
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    #[test]
+    fn cache_key_ignores_fragments_but_keeps_query_strings() {
+        let first = Url::parse("https://EXAMPLE.com:443/path?q=1#first").unwrap();
+        let second = Url::parse("https://example.com/path?q=1#second").unwrap();
+        let different_query = Url::parse("https://example.com/path?q=2#first").unwrap();
+
+        assert_eq!(status_cache_key(&first), status_cache_key(&second));
+        assert_ne!(status_cache_key(&first), status_cache_key(&different_query));
+        assert!(!status_cache_key(&first).contains('#'));
+    }
+
+    #[test]
+    fn normal_requests_have_no_hidden_retry_spacing() {
+        let mut settings = Settings::default();
+        settings.links_retry_delay = 10_000;
+        let tracker = DomainTracker::new(&LinkCheckConfig::from_settings(&settings));
+
+        assert_eq!(tracker.get_delay_for("example.com"), Duration::ZERO);
+        assert_eq!(tracker.get_delay_for("example.com"), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn head_falls_back_to_get_and_sends_the_configured_user_agent() {
+        let (url, server) = serve_statuses(vec![405, 204]).await;
+        let mut settings = Settings::default();
+        settings.http_user_agent = "ConfiguredCrawler/9.1".to_string();
+        settings.links_request_timeout = 2;
+        settings.client_connect_timeout = 2;
+        let config = LinkCheckConfig::from_settings(&settings);
+        let client = build_client(&config, &settings, None);
+
+        let response = try_head_then_get(&client, &url).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("HEAD /resource HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /resource HTTP/1.1"));
+        assert!(requests[0]
+            .to_ascii_lowercase()
+            .contains("user-agent: configuredcrawler/9.1"));
+    }
+
+    #[tokio::test]
+    async fn genuine_head_status_is_preserved_without_get() {
+        let (url, server) = serve_statuses(vec![404]).await;
+        let settings = Settings::default();
+        let config = LinkCheckConfig::from_settings(&settings);
+        let client = build_client(&config, &settings, None);
+
+        let response = try_head_then_get(&client, &url).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("HEAD /resource HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn internal_cache_miss_is_recorded_without_a_network_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            timeout(Duration::from_millis(250), listener.accept())
+                .await
+                .is_ok() as usize
+        });
+        let url = format!("http://{address}/internal#section");
+        let base_url = Url::parse(&format!("http://{address}/")).unwrap();
+        let settings = Settings::default();
+        let checker = SharedLinkChecker::new(&settings, None, Arc::new(DashMap::new()));
+
+        let result = checker
+            .check_links(
+                Some(one_link(url, true)),
+                &base_url,
+                "source".to_string(),
+            )
+            .await;
+
+        assert_eq!(result.internal.len(), 1);
+        assert_eq!(result.internal[0].status, None);
+        assert_eq!(result.internal[0].error, None);
+        assert!(!result.internal[0].url.contains('#'));
+        assert_eq!(server.await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_registry_hit_resolves_status_without_a_network_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            timeout(Duration::from_millis(250), listener.accept())
+                .await
+                .is_ok() as usize
+        });
+        let url = format!("http://{address}/internal#section");
+        let normalized = format!("http://{address}/internal");
+        let base_url = Url::parse(&format!("http://{address}/")).unwrap();
+        let registry = Arc::new(DashMap::new());
+        registry.insert(normalized, 410);
+        let settings = Settings::default();
+        let checker = SharedLinkChecker::new(&settings, None, registry);
+
+        let result = checker
+            .check_links(
+                Some(one_link(url, true)),
+                &base_url,
+                "source".to_string(),
+            )
+            .await;
+
+        assert_eq!(result.internal[0].status, Some(410));
+        assert_eq!(result.internal[0].error.as_deref(), Some("HTTP Error: 410"));
+        assert_eq!(server.await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_pages_single_flight_the_same_external_link() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut request_count = 0_usize;
+            loop {
+                let accepted = timeout(Duration::from_millis(350), listener.accept()).await;
+                let Ok(Ok((mut socket, _))) = accepted else {
+                    break;
+                };
+                request_count += 1;
+                let mut buffer = vec![0_u8; 8 * 1024];
+                let _ = socket.read(&mut buffer).await.unwrap();
+                sleep(Duration::from_millis(75)).await;
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+            request_count
+        });
+
+        let url = format!("http://{address}/shared#fragment");
+        let base_url = Url::parse(&format!("http://{address}/")).unwrap();
+        let links = one_link(url, false);
+        let mut settings = Settings::default();
+        settings.links_max_concurrent_requests = 4;
+        settings.links_request_timeout = 2;
+        settings.client_connect_timeout = 2;
+        let checker = SharedLinkChecker::new(
+            &settings,
+            Some("SingleFlightTest/1.0".to_string()),
+            Arc::new(DashMap::new()),
+        );
+
+        let (first, second) = tokio::join!(
+            checker.check_links(Some(links.clone()), &base_url, "page-1".to_string()),
+            checker.check_links(Some(links), &base_url, "page-2".to_string())
+        );
+        assert_eq!(first.external[0].status, Some(200));
+        assert_eq!(second.external[0].status, Some(200));
+        assert_eq!(server.await.unwrap(), 1);
+    }
 }

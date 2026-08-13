@@ -16,6 +16,12 @@ use super::helpers::{
 pub struct RedirectHop {
     pub url: String,
     pub status_code: u16,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub response_time: Option<f64>,
 }
 
 // Result of evaluating one Custom Search rule (see db_deep::db::CustomSearchRule)
@@ -75,6 +81,10 @@ pub struct DomainCrawlResults {
     pub pdf_files: Vec<String>,
     pub https: bool,
     pub cross_origin: SecuritySummary,
+    /// Forms on the page and where each submits to, for the security report
+    /// and Screaming Frog's `Form N Action Link` fields.
+    #[serde(default)]
+    pub forms: Vec<crate::domain_crawler::helpers::forms_selector::FormAction>,
     pub psi_results: Result<Vec<Value>, String>,
     pub original_url: String,                     // The URL we requested
     pub redirect_url: Option<String>,             // The redirect URL (if any)
@@ -91,6 +101,11 @@ pub struct DomainCrawlResults {
     /// Exact hash of normalized H1-H3 text, for flagging pages that share the same
     /// heading structure. `None` when the check is disabled, or the page has no headings.
     pub heading_hash: Option<u64>,
+    /// Transport/parser error for a persisted status-0 row. Failed URLs are
+    /// first-class crawl results so exports and history do not silently lose
+    /// them.
+    #[serde(default)]
+    pub crawl_error: Option<String>,
 }
 
 // Implement Default for DomainCrawlResults
@@ -102,6 +117,7 @@ impl Default for DomainCrawlResults {
             description: String::new(),
             headings: HashMap::new(),
             javascript: JavaScript::default(),
+            forms: Vec::new(),
             images: Ok(Vec::new()),
             status_code: 0, // Default to 0 for failed URLs
             anchor_links: None,
@@ -157,6 +173,7 @@ impl Default for DomainCrawlResults {
             cookies: Ok(Vec::new()),
             content_simhash: None,
             heading_hash: None,
+            crawl_error: None,
         }
     }
 }
@@ -223,6 +240,8 @@ pub struct LightCrawlResult {
     pub pagination: crate::domain_crawler::helpers::pagination_selector::PaginationLinks,
     #[serde(default)]
     pub page_meta: crate::domain_crawler::helpers::page_meta::PageMeta,
+    #[serde(default)]
+    pub crawl_error: Option<String>,
 }
 
 impl LightCrawlResult {
@@ -336,6 +355,7 @@ impl LightCrawlResult {
             redirection_type: full.redirection_type.clone(),
             pagination: full.pagination.clone(),
             page_meta: full.page_meta.clone(),
+            crawl_error: full.crawl_error.clone(),
         }
     }
 

@@ -35,6 +35,10 @@ import {
 import TableFloatMenus from "../CrawlHistory/_components/TableFloatMenus";
 import RankingMenus from "../Sidebar/RankingInfo/RankingMenus";
 
+const isMissingGscCredentials = (error: unknown) =>
+  String(error).includes("client secret file") ||
+  String(error).includes("credentials file");
+
 interface KeywordOption {
   value: string;
   label: string;
@@ -147,7 +151,13 @@ export default function KeywordSearch() {
         // @ts-ignore
         setCredentials(credentials);
       } catch (error) {
-        console.error("Error fetching credentials:", error);
+        // Not having connected Google Search Console is a normal state,
+        // not a failure worth a red error badge on every launch.
+        if (isMissingGscCredentials(error)) {
+          console.debug("Google Search Console is not connected yet.");
+        } else {
+          console.error("Error fetching credentials:", error);
+        }
       }
     };
     getCredentials();

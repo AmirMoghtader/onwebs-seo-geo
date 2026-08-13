@@ -135,6 +135,12 @@ pub fn set_gemini_api_key(
     let json = serde_json::to_string(&gemini_api_key)
         .map_err(|e| format!("Failed to serialize API key: {}", e))?;
     std::fs::write(&secret_file, json).map_err(|e| format!("Failed to write file: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&secret_file, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to secure API key file: {}", e))?;
+    }
 
     println!(
         "Gemini API key set successfully in: {}",

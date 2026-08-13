@@ -30,6 +30,13 @@ const FooterLoader = () => {
 
   const [failedPages, setFailedPages] = useState(0);
 
+  const tableFilter = useCrawlStore((state) => state.tableFilter);
+  const setTableFilter = useCrawlStore((state) => state.actions.ui.setTableFilter);
+  const failedFilterActive = tableFilter?.kind === "failed";
+  const showFailed = useCallback(() => {
+    setTableFilter(failedFilterActive ? null : { kind: "failed", label: "ناموفق" });
+  }, [failedFilterActive, setTableFilter]);
+
   // What the crawler is doing right now. Without this a crawl stuck on a
   // timing-out host is indistinguishable from a broken one: the percentage
   // just sits there with nothing to explain it.
@@ -226,14 +233,30 @@ const FooterLoader = () => {
         </div>
 
         {failedPages > 0 && (
-          <div className="flex items-center space-x-1.5">
+          // Clicking narrows the main table to exactly these URLs, where they
+          // can be selected and retried. A count you cannot act on is just a
+          // reason to worry.
+          <button
+            type="button"
+            onClick={showFailed}
+            title={
+              failedFilterActive
+                ? "برداشتن فیلتر ناموفق"
+                : "نمایش نشانی‌های ناموفق در جدول"
+            }
+            className={`flex items-center space-x-1.5 rounded px-1.5 py-0.5 transition-colors ${
+              failedFilterActive
+                ? "bg-red-500/20 ring-1 ring-red-500/50"
+                : "hover:bg-red-500/10"
+            }`}
+          >
             <span className="text-red-500/60 dark:text-red-400/60 uppercase font-bold text-[9px]">
               ناموفق:
             </span>
-            <span className="text-red-600 dark:text-red-400 font-mono font-medium">
+            <span className="text-red-600 dark:text-red-400 font-mono font-medium underline decoration-dotted underline-offset-2">
               {failedPages}
             </span>
-          </div>
+          </button>
         )}
 
         {rateLimit && !showComplete && (

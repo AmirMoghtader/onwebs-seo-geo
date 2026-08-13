@@ -264,11 +264,12 @@ checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix-web",
  "anyhow",
  "base64 0.22.1",
+ "brotli",
  "calamine",
  "chrono",
  "colored",
@@ -276,6 +277,7 @@ dependencies = [
  "dashmap",
  "directories",
  "dotenv",
+ "flate2",
  "futures",
  "genai",
  "google-sheets4",
@@ -293,9 +295,10 @@ dependencies = [
  "moka",
  "oauth2",
  "once_cell",
+ "quick-xml 0.38.3",
  "r2d2",
  "r2d2_sqlite",
- "rand 0.9.2",
+ "rand 0.7.3",
  "rayon",
  "regex",
  "reqwest 0.12.28",

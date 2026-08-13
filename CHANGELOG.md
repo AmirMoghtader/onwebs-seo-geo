@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.1 — 2026-08-14
+
+Reliability release. A crawl of a slow Persian host (838 URLs) went from dying
+at 0% to finishing completely, and several columns that had been silently empty
+or wrong now carry real numbers.
+
+### Crawl reliability
+- **robots.txt no longer kills a crawl it cannot reach.** A transport failure
+  (DNS, TLS, timeout, VPN) was treated as a server error, memoised for the
+  whole crawl, and read as a site-wide ban. RFC 9309's hold-off rule applies to
+  a server answering badly, not to us failing to connect. Transport errors now
+  retry three times with backoff and then continue without robots rules
+- Default concurrency lowered from 16 to 6; a slow host collapsed under the
+  wider fan-out and returned timeouts that were recorded as permanent failures
+- Response bodies are retried on a truncated read. The request had retries and
+  the body read had none, so one connection closed mid-response burned the URL
+- Inline `data:` images are no longer fetched — 324 guaranteed failures per crawl
+- Dead external links log at debug, not error; they are a finding, not a fault
+
+### Data correctness
+- `Size` was reading a key the crawler never writes and was blank on every row
+  of every crawl. `Transferred` was filled with the *decompressed* length,
+  making it equal `Size` on 821 of 838 pages. Compressed bodies are now decoded
+  by hand so the wire size is measured: 284,955 raw vs 34,191 gzipped
+- Outlinks disagreed between the table and the details drawer because they read
+  different records; both now read one calculation
+- Inlinks are computed by inverting the whole link graph in SQLite — the table
+  had no data to invert and reported 0, the drawer read a field nothing wrote
+- Flesch Reading Ease is left blank for non-English text instead of reporting a
+  number produced by counting English vowels in Persian prose
+- Persian URLs display decoded and encode exactly once
+- JavaScript files were gated behind the Headless Chrome switch, so a crawl that
+  found every image and stylesheet reported zero scripts
+
+### Interface
+- shadcn colour tokens were defined but never mapped into Tailwind, so every
+  popover, dialog and dropdown rendered with no background
+- URL details pane reads as a two-column list again; the app-wide right
+  alignment had stranded each value at the far edge, away from its label
+- Failed URLs are clickable from the status bar, selectable with click,
+  Cmd-click and Shift-click, and retryable from the right-click menu
+- `Clear` empties the results without restarting the app
+- Forms are recorded with their action, path type and whether they post insecurely
+
+
 ## 0.1.0 — 2026-08-12
 
 First release of **Onwebs SEO & GEO**, forked from RustySEO 0.4.0 (GPL-3.0).

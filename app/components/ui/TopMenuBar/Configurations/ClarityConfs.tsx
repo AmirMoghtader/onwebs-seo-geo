@@ -42,8 +42,6 @@ export default function ClarityConfs() {
       });
   }, []);
 
-  console.log(apiEndpoint, apiKey, "Clkarity stuff");
-
   return (
     <Card className="w-full mt-4 mx-auto border-0 shadow-none bg-transparent">
       <CardContent className="space-y-6 px-0">

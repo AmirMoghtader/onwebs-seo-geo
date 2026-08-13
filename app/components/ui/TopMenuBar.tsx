@@ -218,15 +218,15 @@ const TopMenuBar = () => {
     }
   }, []);
 
-  // File > Save / Open Crawl. The crawl database only keeps the most recent
-  // run, so this is what lets a crawl outlive the next one.
+  // File > Save / Open Crawl. Native files are complete SQLite crawl stores;
+  // version-1 JSON files are still accepted for compatibility.
   const crawlRows = useGlobalCrawlStore((st) => st.crawlData);
   const { setDomainCrawlData } = useDataActions();
 
   const handleSaveCrawl = async () => {
     try {
-      const path = await saveCrawl(crawlRows || []);
-      if (path) toast.success(`کراول ذخیره شد (${crawlRows.length} صفحه)`);
+      const saved = await saveCrawl(crawlRows || []);
+      if (saved) toast.success(`کراول ذخیره شد (${saved.pageCount} صفحه)`);
     } catch (e: any) {
       if (e?.message === "EMPTY") {
         toast.error("کراولی برای ذخیره نیست — اول یک کراول اجرا کنید");
@@ -242,6 +242,35 @@ const TopMenuBar = () => {
       const file = await openCrawl();
       if (!file) return;
       setDomainCrawlData(file.rows);
+      useGlobalCrawlStore.setState((state) => ({
+        crawlData: file.rows,
+        crawlDataVersion: state.crawlDataVersion + 1,
+      }));
+
+      if (file.version >= 2) {
+        const store = useGlobalCrawlStore.getState();
+        const [internalLinks, externalLinks, stats] = await Promise.all([
+          invoke("get_links_page_command", {
+            dataType: "internal_links",
+            limit: 5000,
+            offset: 0,
+          }).catch(() => []),
+          invoke("get_links_page_command", {
+            dataType: "external_links",
+            limit: 5000,
+            offset: 0,
+          }).catch(() => []),
+          invoke("get_crawl_summary_stats_command").catch(() => null),
+        ]);
+        store.setAggregatedData({
+          internalLinks: (internalLinks as any[]) || [],
+          externalLinks: (externalLinks as any[]) || [],
+        });
+        if (stats && typeof (stats as any).pages === "number") {
+          store.setFinalCrawlStats(stats as any);
+        }
+        store.setFinishedDeepCrawl(true);
+      }
       toast.success(
         `کراول بازشد: ${file.domain} — ${file.pageCount} صفحه`,
         { description: file.savedAt ? `ذخیره‌شده در ${file.savedAt.slice(0, 10)}` : undefined },

@@ -58,7 +58,7 @@ pub mod loganalyser;
 pub mod server;
 pub mod version;
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 // tauri-plugin-process only targets desktop; on mobile this becomes a no-op
 // plugin so the builder chain stays identical.
@@ -75,17 +75,17 @@ fn tauri_plugin_process_init_shim<R: tauri::Runtime>() -> tauri::plugin::TauriPl
 pub struct AppState {
     pub settings: Arc<RwLock<Settings>>,
     pub crawl_control: Arc<AtomicU8>,
+    /// Guards the single shared crawl database and control channel. Starting a
+    /// second crawl while one is active would otherwise clear the first
+    /// crawl's database and reset its Stop/Pause flag.
+    pub crawl_active: Arc<AtomicBool>,
 }
 
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, Default)]
 struct Config {
     page_speed_key: String,
     openai_key: String,
 }
-
-// IF THE SETTINGS FILE NEEDS TO BE
-// REPLACED TO AVOID ERRORS IN THE APP DUE TO BREAKING CHANGES ON THE NEW RELEASE,  SET THIS TO TRUE
-const CHECKS_VERSION: bool = true;
 
 #[tauri::command]
 async fn pause_crawl_command(state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -224,16 +224,6 @@ async fn run_async() {
         }
     };
 
-    // IN CASE CONFIG FILE NEEDS TO BE REPLACED FOR THE APP NOT TO GIVE ERRORS DUE TO NEW FEATURES
-    match CHECKS_VERSION {
-        false => {
-            println!("Settings loaded successfully.");
-        }
-        true => {
-            settings::settings::check_and_replace().await;
-        }
-    }
-
     // initialise the dbs
     let _start_db = crawler::db::databases_start();
     // let _domain_results_db = domain_crawler::database::add_data().await;
@@ -300,6 +290,7 @@ async fn run_async() {
         .manage(AppState {
             settings,
             crawl_control: Arc::new(AtomicU8::new(0)),
+            crawl_active: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             pause_crawl_command,
@@ -363,6 +354,9 @@ async fn run_async() {
             domain_commands::create_excel,
             domain_commands::create_excel_main_table,
             domain_commands::export_full_crawl_to_excel_command,
+            domain_commands::restore_crawl_snapshot_command,
+            domain_commands::save_crawl_file_command,
+            domain_commands::open_crawl_file_command,
             // DEEP CRAWL DATABASE STUFF
             db::create_domain_results_table,
             db::read_domain_results_history_table,
@@ -385,6 +379,10 @@ async fn run_async() {
             domain_commands::check_assets_command,
             domain_commands::capture_page_screenshot_command,
             domain_commands::get_aggregated_crawl_data_command,
+            domain_commands::clear_crawl_data_command,
+            domain_commands::get_inlink_counts_command,
+            domain_commands::get_broken_links_command,
+            domain_commands::retry_urls_command,
             domain_commands::get_links_page_command,
             domain_commands::get_incoming_links_command,
             domain_commands::get_crawl_page_command,
@@ -485,49 +483,33 @@ async fn add_api_key(key: String, api_type: String) -> Result<String, String> {
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let config_dir = project_dirs.config_dir();
 
-    println!("Config directory: {:?}", config_dir);
-    println!("project_dirs: {:?}", project_dirs);
-
     std::fs::create_dir_all(config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    let config_file = config_dir.join("api_keys.toml");
+    let mut config = std::fs::read_to_string(&config_file)
+        .ok()
+        .and_then(|content| toml::from_str::<Config>(&content).ok())
+        .unwrap_or_default();
 
-    if api_type == "page_speed" {
-        // Create config file
-        let config = Config {
-            page_speed_key: key.clone(),
-            openai_key: "".to_string(),
-        };
-
-        let config_file = config_dir.join("api_keys.toml");
-        let toml_string =
-            toml::to_string(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-        std::fs::write(&config_file, toml_string)
-            .map_err(|e| format!("Failed to write config file: {}", e))?;
-        println!(
-            "Key: {} \n added to configuration file {}",
-            key,
-            config_file.display()
-        );
-        return Ok(key);
+    match api_type.as_str() {
+        "page_speed" => config.page_speed_key = key,
+        "openai" => config.openai_key = key,
+        _ => return Err(format!("Unsupported API key type: {}", api_type)),
     }
 
-    if api_type == "openai" {
-        // Create config file
-        let config = Config {
-            page_speed_key: "".to_string(),
-            openai_key: key.clone(),
-        };
-        let config_file = config_dir.join("api_keys.toml");
-        let toml_string =
-            toml::to_string(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let toml_string =
+        toml::to_string(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_file, toml_string)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
 
-        std::fs::write(&config_file, toml_string)
-            .map_err(|e| format!("Failed to write config file: {}", e))?;
-        //println!("Config file created at: {}", config_file.display());
-        return Ok(key);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&config_file, permissions)
+            .map_err(|e| format!("Failed to secure config file: {}", e))?;
     }
 
-    println!("API key: {}", key);
-    Ok(key)
+    tracing::info!("{} API credential saved", api_type);
+    Ok("saved".to_string())
 }

@@ -40,7 +40,23 @@ export function ContentPlanner() {
         <PlusCircle className="mr-2 h-3 w-3 text-xs" /> افزودن موضوع
       </button>
       <DragDropContext onDragEnd={onDragEnd}>
-        <Droppable droppableId="content-list" isDropDisabled={false}>
+        {/* React 19 dropped defaultProps for function components, and
+            react-beautiful-dnd 13 puts every optional Droppable prop there.
+            Without them the library sees `undefined` and throws
+            "Invariant failed: isCombineEnabled must be a boolean" on mount, so
+            all eight defaults are restored here by hand. The library is
+            unmaintained and will not ship a React 19 fix; @hello-pangea/dnd is
+            the drop-in successor if this ever needs more than a Droppable. */}
+        <Droppable
+          droppableId="content-list"
+          mode="standard"
+          type="DEFAULT"
+          direction="vertical"
+          isDropDisabled={false}
+          isCombineEnabled={false}
+          ignoreContainerClipping={false}
+          getContainerForClone={() => document.body as HTMLElement}
+        >
           {(provided) => (
             <div
               {...provided.droppableProps}

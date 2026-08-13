@@ -10,6 +10,7 @@ import React, { useMemo, useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import useGlobalCrawlStore from "@/store/GlobalCrawlDataStore";
 import { buildOverview } from "./computeOverview";
+import { crawlUniverse } from "@/app/lib/crawlUniverse";
 
 const num = (n: number) => n.toLocaleString("en-US");
 const percent = (p: number | null) => (p === null ? "" : `${p.toFixed(2)}%`);
@@ -41,6 +42,7 @@ const Row = ({ label, urls, pct, depth, onClick, active, bold }: any) => (
 
 const OverviewTree = () => {
   const crawlData = useGlobalCrawlStore((s) => s.crawlData);
+  const aggregatedData = useGlobalCrawlStore((s) => s.aggregatedData);
   const tableFilter = useGlobalCrawlStore((s) => s.tableFilter);
   const setTableFilter = useGlobalCrawlStore(
     (s) => s.actions.ui.setTableFilter,
@@ -55,9 +57,12 @@ const OverviewTree = () => {
     internal: true,
   });
 
+  // The same set of URLs the Internal table lists. Counting pages alone here
+  // was the reason this pane reported 143 crawled URLs, 0 images and 0
+  // stylesheets against a table showing 218 rows including 66 images.
   const { summary, elements } = useMemo(
-    () => buildOverview(crawlData || []),
-    [crawlData],
+    () => buildOverview(crawlUniverse(crawlData || [], aggregatedData)),
+    [crawlData, aggregatedData],
   );
 
   const jump = (el: any, child: any) => {

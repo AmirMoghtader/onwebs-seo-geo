@@ -1,59 +1,84 @@
 use url::Url;
 
-/// Normalize URLs to reduce duplicates
+/// Return a standards-safe canonical spelling of an absolute URL for crawl
+/// de-duplication.
+///
+/// `url::Url` already applies the URL Standard's host casing, default-port and
+/// dot-segment rules while parsing. We deliberately do *not* rewrite the query
+/// string or trailing slash: parameter order, duplicate parameters, escaping,
+/// and `/path` versus `/path/` can all be meaningful to an origin server.
 pub fn normalize_url(url_str: &str) -> String {
     let Ok(mut url) = Url::parse(url_str) else {
-        return url_str.to_lowercase();
+        // Lower-casing an unparseable value can silently change a case-sensitive
+        // path or query. Leave it untouched so callers can reject it explicitly.
+        return url_str.to_string();
     };
 
-    // 1. Remove fragments
+    // Fragments are never sent in an HTTP request and therefore cannot identify
+    // a different crawl resource.
     url.set_fragment(None);
 
-    // 2. Normalize path: remove trailing slash, double slashes, and ./
-    let mut path = url.path().to_string();
-    if path.len() > 1 && path.ends_with('/') {
-        path = path.trim_end_matches('/').to_string();
-    }
-    
-    let cleaned_path = path
-        .replace("//", "/")
-        .replace("/./", "/");
-    
-    url.set_path(&cleaned_path);
-
-    // 3. Remove common tracking parameters
-    let tracking_params = [
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_term",
-        "utm_content",
-        "fbclid",
-        "gclid",
-        "msclkid",
-    ];
-
-    let query_params: Vec<(String, String)> = url
-        .query_pairs()
-        .filter(|(name, _)| !tracking_params.contains(&name.to_lowercase().as_str()))
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-
-    if query_params.is_empty() {
-        url.set_query(None);
-    } else {
-        let mut new_query = String::new();
-        for (i, (k, v)) in query_params.iter().enumerate() {
-            if i > 0 {
-                new_query.push('&');
-            }
-            new_query.push_str(k);
-            new_query.push('=');
-            new_query.push_str(v);
-        }
-        url.set_query(Some(&new_query));
+    // The URL crate currently removes default ports during parsing. Keep this
+    // explicit so the de-duplication contract remains clear if parser behaviour
+    // changes or a URL was assembled programmatically before being serialized.
+    let is_default_port = matches!(
+        (url.scheme(), url.port()),
+        ("http", Some(80)) | ("https", Some(443))
+    );
+    if is_default_port {
+        let _ = url.set_port(None);
     }
 
-    // 4. Convert to lowercase domain (Url::parse already does this mostly, but ensure string consistency)
-    url.to_string().trim_end_matches('?').to_string()
+    url.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url;
+
+    #[test]
+    fn removes_fragments_default_ports_and_dot_segments() {
+        assert_eq!(
+            normalize_url("HTTP://Example.COM:80/a/./b/../c?q=1#section"),
+            "http://example.com/a/c?q=1"
+        );
+        assert_eq!(
+            normalize_url("https://Example.COM:443/a#top"),
+            "https://example.com/a"
+        );
+    }
+
+    #[test]
+    fn preserves_trailing_slash_and_repeated_path_slashes() {
+        assert_eq!(
+            normalize_url("https://example.com/path"),
+            "https://example.com/path"
+        );
+        assert_eq!(
+            normalize_url("https://example.com/path/"),
+            "https://example.com/path/"
+        );
+        assert_eq!(
+            normalize_url("https://example.com/a//b/"),
+            "https://example.com/a//b/"
+        );
+    }
+
+    #[test]
+    fn preserves_query_order_duplicates_encoding_and_tracking_parameters() {
+        assert_eq!(
+            normalize_url(
+                "https://example.com/P?b=two%20words&utm_source=News&a=1&a=2&sig=A%2Fb"
+            ),
+            "https://example.com/P?b=two%20words&utm_source=News&a=1&a=2&sig=A%2Fb"
+        );
+    }
+
+    #[test]
+    fn does_not_mutate_an_invalid_url() {
+        assert_eq!(
+            normalize_url("NOT A URL/CaseSensitive?X=Y"),
+            "NOT A URL/CaseSensitive?X=Y"
+        );
+    }
 }

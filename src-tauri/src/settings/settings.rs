@@ -5,21 +5,53 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use sysinfo::{ProcessExt, System, SystemExt};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use toml;
 use uuid::Uuid;
 
 use crate::domain_crawler::helpers::keyword_selector::default_stop_words;
 use crate::domain_crawler::user_agents;
 use crate::loganalyser::log_state::set_taxonomies;
-use crate::settings::utils;
 use crate::settings::utils::agentic_bots::agentic_bots;
 use crate::settings::utils::indexing_bots::generate_indexing_bots;
 use crate::settings::utils::retrieval_agents::generate_retrieval_agents;
 use crate::settings::utils::user_bots::generate_default_user_bots;
 use crate::version::local_version;
 
+/// Three, against `max_retries`' two: a truncated body is cheap to re-ask for
+/// and usually succeeds on the next try.
+pub fn default_body_read_attempts() -> u32 {
+    3
+}
+
+pub fn default_http_user_agent() -> String {
+    format!(
+        "Mozilla/5.0 (compatible; OnwebsSEO/{}; +https://github.com/AmirMoghtader/onwebs-seo-geo)",
+        local_version()
+    )
+}
+
+pub fn default_robots_user_agent() -> String {
+    "OnwebsSEO".to_string()
+}
+
+// Settings cross process boundaries (TOML, JSON and the desktop UI), so they
+// must be bounded before they are used as semaphore sizes, channel capacities,
+// allocation hints or timeout durations. These are safety limits rather than
+// crawl-performance claims.
+const MAX_CRAWL_CONCURRENCY: usize = 256;
+const MAX_LINK_CONCURRENCY: usize = 512;
+const MAX_JS_CONCURRENCY: usize = 32;
+const MAX_BATCH_SIZE: usize = 10_000;
+const MAX_URLS_PER_DOMAIN: usize = 10_000_000;
+const MAX_URLS_STORED: usize = 1_000_000;
+const MAX_DELAY_MS: u64 = 3_600_000;
+const MAX_REQUEST_TIMEOUT_SECS: u64 = 600;
+const MAX_CRAWL_TIMEOUT_SECS: u64 = 604_800;
+const MAX_RETRIES: u32 = 10;
+const MAX_LINK_RETRIES: usize = 10;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct Settings {
     // CREATED ON
     pub date_created: String,
@@ -32,6 +64,13 @@ pub struct Settings {
     // --- General Crawler Settings ---
     /// List of user agents to rotate
     pub user_agents: Vec<String>,
+
+    /// User-Agent sent in HTTP requests. This is intentionally independent
+    /// from `robots_user_agent`, matching Screaming Frog's configuration.
+    pub http_user_agent: String,
+
+    /// Product token used to select the applicable robots.txt group.
+    pub robots_user_agent: String,
 
     /// Regex patterns, one per entry. A URL matching any of these is never
     /// crawled. Mirrors Screaming Frog's Configuration > Exclude.
@@ -90,6 +129,15 @@ pub struct Settings {
     pub client_connect_timeout: u64,
     /// Number of redirects to follow
     pub redirect_policy: usize,
+    /// Extra attempts at reading a response body after the request already
+    /// succeeded, each after a doubling backoff.
+    ///
+    /// Separate from `max_retries`, and larger, because it answers a different
+    /// failure: not "the host would not talk to us" but "the host stopped
+    /// mid-sentence". Every one of the 27 failures in an 810-page websima.com
+    /// crawl was that, and the same pages read fine when asked again.
+    #[serde(default = "default_body_read_attempts")]
+    pub body_read_attempts: u32,
     /// Maximum retries for failed requests
     pub max_retries: u32,
 
@@ -184,11 +232,19 @@ impl Settings {
 
             // --- General Crawler Settings ---
             user_agents: user_agents::agents(),
+            http_user_agent: default_http_user_agent(),
+            robots_user_agent: default_robots_user_agent(),
             exclude_patterns: Vec::new(),
             list_mode: false,
             list_urls: Vec::new(),
             include_patterns: Vec::new(),
-            concurrent_requests: 16,
+            // Six, not sixteen. A slow host (websima.com answers in up to 10.8s
+            // under Screaming Frog's gentle 5-thread load) collapses under a
+            // wide fan-out: responses cross the 20s client timeout and the URL
+            // is recorded as failed. Screaming Frog finishes such a site at
+            // ~1.7 URL/s; a crawl that completes slowly beats one that dies
+            // fast. Users on fast hosts can raise this in Settings.
+            concurrent_requests: 6,
             batch_size: 40,
             max_depth: 50,
             max_urls_per_domain: 100000,
@@ -208,6 +264,7 @@ impl Settings {
             client_connect_timeout: 15,
             redirect_policy: 5,
             max_retries: 2,
+            body_read_attempts: default_body_read_attempts(),
 
             // --- JavaScript & Rendering ---
             html: false,
@@ -277,6 +334,8 @@ impl Settings {
         s.push_str("# List of user agents to rotate\n");
         let ua = serde_json::to_string(&self.user_agents).unwrap_or_else(|_| "[]".to_string());
         s.push_str(&format!("user_agents = {}\n", ua));
+        s.push_str(&format!("http_user_agent = {:?}\n", self.http_user_agent));
+        s.push_str(&format!("robots_user_agent = {:?}\n", self.robots_user_agent));
         let ex = serde_json::to_string(&self.exclude_patterns).unwrap_or_else(|_| "[]".to_string());
         s.push_str(&format!("exclude_patterns = {}\n", ex));
         s.push_str(&format!("list_mode = {}\n", self.list_mode));
@@ -284,9 +343,6 @@ impl Settings {
         s.push_str(&format!("list_urls = {}\n", lst));
         let inc = serde_json::to_string(&self.include_patterns).unwrap_or_else(|_| "[]".to_string());
         s.push_str(&format!("include_patterns = {}\n", inc));
-        s.push_str(&format!("list_mode = {}\n", self.list_mode));
-        let lst = serde_json::to_string(&self.list_urls).unwrap_or_else(|_| "[]".to_string());
-        s.push_str(&format!("list_urls = {}\n", lst));
 
         s.push_str("# Number of concurrent requests for domain crawling\n");
         s.push_str(&format!(
@@ -353,6 +409,7 @@ impl Settings {
 
         s.push_str("\n# --- JavaScript & Rendering ---\n");
         s.push_str("# Whether to expect HTML content\n");
+        s.push_str(&format!("body_read_attempts = {}\n", self.body_read_attempts));
         s.push_str(&format!("html = {}\n", self.html));
 
         s.push_str("# Enable Headless Chrome rendering\n");
@@ -524,6 +581,116 @@ impl Settings {
             .map(|dirs| dirs.config_dir().join("configs.toml"))
     }
 
+    /// Bring older config files forward without discarding user choices.
+    /// Returns true when a value was repaired or migrated and should be saved.
+    fn normalize_migrated(&mut self) -> bool {
+        let mut changed = false;
+        let default_http = default_http_user_agent();
+
+        // The previous UI stored the selected request UA as a one-item legacy
+        // vector. Adopt it once when the new explicit field is not meaningful.
+        if (self.http_user_agent.trim().is_empty()
+            || (self.http_user_agent == default_http && self.user_agents.len() == 1))
+            && self.user_agents.first().is_some_and(|ua| !ua.trim().is_empty())
+        {
+            self.http_user_agent = self.user_agents[0].trim().to_string();
+            changed = true;
+        }
+        if self.http_user_agent.trim().is_empty() {
+            self.http_user_agent = default_http;
+            changed = true;
+        }
+        if self.robots_user_agent.trim().is_empty() {
+            self.robots_user_agent = default_robots_user_agent();
+            changed = true;
+        }
+        if self.user_agents.is_empty() {
+            self.user_agents = user_agents::agents();
+            changed = true;
+        }
+
+        macro_rules! repair {
+            ($field:ident, $value:expr) => {{
+                let repaired = $value;
+                if self.$field != repaired {
+                    self.$field = repaired;
+                    changed = true;
+                }
+            }};
+        }
+
+        // Empty capacities can panic (Semaphore::new(0) never progresses) or
+        // create tight loops. Very large values can result in accidental
+        // multi-gigabyte allocations after a negative UI value is converted.
+        repair!(concurrent_requests, self.concurrent_requests.clamp(1, MAX_CRAWL_CONCURRENCY));
+        repair!(batch_size, self.batch_size.clamp(1, MAX_BATCH_SIZE));
+        repair!(javascript_concurrency, self.javascript_concurrency.clamp(1, MAX_JS_CONCURRENCY));
+        repair!(links_max_concurrent_requests, self.links_max_concurrent_requests.clamp(1, MAX_LINK_CONCURRENCY));
+        repair!(links_initial_task_capacity, self.links_initial_task_capacity.clamp(1, 1_000_000));
+        repair!(db_batch_size, self.db_batch_size.clamp(1, MAX_BATCH_SIZE));
+        repair!(db_chunk_size_domain_crawler, self.db_chunk_size_domain_crawler.clamp(1, 100_000));
+
+        repair!(max_depth, self.max_depth.min(1_000));
+        repair!(max_urls_per_domain, self.max_urls_per_domain.clamp(1, MAX_URLS_PER_DOMAIN));
+        repair!(max_urls_stored, self.max_urls_stored.clamp(100, MAX_URLS_STORED));
+        repair!(redirect_policy, self.redirect_policy.min(50));
+        repair!(max_retries, self.max_retries.min(MAX_RETRIES));
+        repair!(links_max_retries, self.links_max_retries.min(MAX_LINK_RETRIES));
+
+        // Delay relationships are normalized together: the advertised maximum
+        // must never be lower than either the initial or adaptive minimum.
+        repair!(base_delay, self.base_delay.min(MAX_DELAY_MS));
+        repair!(min_crawl_delay, self.min_crawl_delay.min(MAX_DELAY_MS));
+        repair!(max_delay, self.max_delay.min(MAX_DELAY_MS));
+        repair!(max_delay, self.max_delay.max(self.base_delay).max(self.min_crawl_delay));
+        repair!(links_retry_delay, self.links_retry_delay.min(MAX_DELAY_MS));
+
+        // Timeout relationships are ordered from the individual request up to
+        // the whole crawl, preventing impossible stall/timeout combinations.
+        repair!(client_timeout, self.client_timeout.clamp(1, MAX_REQUEST_TIMEOUT_SECS));
+        repair!(client_connect_timeout, self.client_connect_timeout.clamp(1, self.client_timeout));
+        repair!(crawl_timeout, self.crawl_timeout.clamp(1, MAX_CRAWL_TIMEOUT_SECS));
+        repair!(crawl_timeout, self.crawl_timeout.max(self.client_timeout));
+        repair!(max_pending_time, self.max_pending_time.clamp(self.client_timeout, self.crawl_timeout));
+        repair!(stall_check_interval, self.stall_check_interval.clamp(1, self.max_pending_time));
+        repair!(links_request_timeout, self.links_request_timeout.clamp(1, MAX_REQUEST_TIMEOUT_SECS));
+        repair!(links_request_timeout, self.links_request_timeout.max(self.client_connect_timeout));
+        repair!(links_pool_idle_timeout, self.links_pool_idle_timeout.clamp(1, 3_600));
+        repair!(links_max_idle_per_host, self.links_max_idle_per_host.clamp(1, 256).min(self.links_max_concurrent_requests));
+
+        let jitter = if self.links_jitter_factor.is_finite() {
+            self.links_jitter_factor.clamp(0.0, 1.0)
+        } else {
+            Settings::new().links_jitter_factor
+        };
+        repair!(links_jitter_factor, jitter);
+
+        repair!(log_batchsize, self.log_batchsize.clamp(1, 100_000));
+        repair!(log_chunk_size, self.log_chunk_size.clamp(1, 10_000_000));
+        repair!(log_sleep_stream_duration, self.log_sleep_stream_duration.clamp(1, 3_600));
+        repair!(log_capacity, self.log_capacity.clamp(1, 100_000));
+        repair!(log_project_chunk_size, self.log_project_chunk_size.clamp(1, 100_000));
+        repair!(log_file_upload_size, self.log_file_upload_size.clamp(1, 100_000));
+        repair!(gsc_row_limit, self.gsc_row_limit.clamp(1, 1_000_000));
+        repair!(axum_api_port, if self.axum_api_port == 0 { 3000 } else { self.axum_api_port });
+        let trimmed_api_host = self.axum_api_host.trim();
+        let normalized_api_host = if trimmed_api_host.is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            trimmed_api_host.to_string()
+        };
+        if self.axum_api_host != normalized_api_host {
+            self.axum_api_host = normalized_api_host;
+            changed = true;
+        }
+        if self.version != local_version() {
+            self.version = local_version();
+            changed = true;
+        }
+
+        changed
+    }
+
     // Delete the file
     pub fn delete_file() -> Result<(), String> {
         let config_path = Self::config_path()?;
@@ -543,16 +710,62 @@ pub async fn load_settings() -> Result<Settings, String> {
     let contents = fs::read_to_string(&config_path)
         .await
         .map_err(|e| format!("Failed to read config: {}", e))?;
-    toml::from_str(&contents).map_err(|e| format!("Failed to parse config: {}", e))
+    let mut settings: Settings =
+        toml::from_str(&contents).map_err(|e| format!("Failed to parse config: {}", e))?;
+    if settings.normalize_migrated() {
+        persist_settings(&settings).await?;
+    }
+    Ok(settings)
 }
 
 pub async fn check_and_replace() {
-    if let Err(e) = utils::config_checker::replace_config_file().await {
-        println!(
-            "Warning: Failed to verify or replace the config file: {}",
-            e
-        );
+    // Kept for existing callers. `load_settings` now performs a field-level,
+    // non-destructive migration instead of deleting the whole config whenever
+    // the application version changes.
+    if let Err(e) = load_settings().await {
+        eprintln!("Warning: settings migration check failed: {}", e);
     }
+}
+
+async fn persist_settings(settings: &Settings) -> Result<(), String> {
+    let config_path = Settings::config_path()?;
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+
+    let serialized = toml::to_string_pretty(settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let temp_path = config_path.with_extension(format!("toml.tmp-{}", Uuid::new_v4()));
+    fs::write(&temp_path, serialized)
+        .await
+        .map_err(|e| format!("Failed to write temporary config: {}", e))?;
+
+    // rename is atomic on Unix. Windows cannot replace an existing file with
+    // rename, so retain a backup before swapping there.
+    #[cfg(target_os = "windows")]
+    if config_path.exists() {
+        let backup_path = config_path.with_extension("toml.bak");
+        fs::copy(&config_path, &backup_path)
+            .await
+            .map_err(|e| format!("Failed to back up config: {}", e))?;
+        fs::remove_file(&config_path)
+            .await
+            .map_err(|e| format!("Failed to replace config: {}", e))?;
+    }
+
+    fs::rename(&temp_path, &config_path)
+        .await
+        .map_err(|e| format!("Failed to activate config: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|e| format!("Failed to secure config: {}", e))?;
+    }
+    Ok(())
 }
 
 /// Creates a new config file if it doesn't exist
@@ -571,11 +784,7 @@ pub async fn create_config_file() -> Result<Settings, String> {
     let settings = Settings::new();
 
     if !config_path.exists() {
-        let toml_str = settings.generate_commented_config();
-
-        fs::write(&config_path, toml_str)
-            .await
-            .map_err(|e| format!("Failed to write config: {}", e))?;
+        persist_settings(&settings).await?;
         println!("✅ Config file created at {:?}", config_path);
     } else {
         println!("⚠️ Config file already exists at {:?}", config_path);
@@ -594,11 +803,22 @@ pub async fn init_settings() -> Result<Settings, String> {
         }
         Err(e) => {
             println!("Failed to load settings: {}. Creating config file...", e);
-            // If the file exists but is invalid, delete it so create_config_file can write a new one
+            // Preserve invalid data for recovery/debugging instead of silently
+            // deleting API choices and crawl preferences.
             if let Ok(config_path) = Settings::config_path() {
                 if config_path.exists() {
-                    let _ = fs::remove_file(&config_path).await;
-                    println!("Deleted invalid config file at {:?}", config_path);
+                    let backup = config_path.with_extension(format!(
+                        "toml.invalid-{}.bak",
+                        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+                    ));
+                    fs::rename(&config_path, &backup)
+                        .await
+                        .map_err(|rename_error| {
+                            format!(
+                                "Failed to preserve invalid config ({e}): {rename_error}"
+                            )
+                        })?;
+                    eprintln!("Invalid config preserved at {:?}", backup);
                 }
             }
             create_config_file().await
@@ -631,7 +851,8 @@ pub fn print_settings(settings: &Settings) {
         "Links Concurrent Requests: {}",
         settings.links_max_concurrent_requests
     );
-    println!("User Agents: {:?}", settings.user_agents);
+    println!("HTTP User-Agent configured: {}", !settings.http_user_agent.is_empty());
+    println!("Robots User-Agent: {}", settings.robots_user_agent);
     println!("HTML: {}", settings.html);
     println!(
         "Links Initial Task Capacity: {}",
@@ -643,11 +864,10 @@ pub fn print_settings(settings: &Settings) {
     println!("Taxonomies: {:?}", settings.taxonomies);
     println!("Rusty ID: {}", settings.rustyid);
     println!("Page Speed Bulkd: {}", settings.page_speed_bulk);
-    if let Some(key) = &settings.page_speed_bulk_api_key {
-        println!("Page Speed Bulk API Key: {:#?}", key);
-    } else {
-        println!("Page Speed Bulk API Key: None");
-    }
+    println!(
+        "Page Speed Bulk API Key configured: {}",
+        matches!(&settings.page_speed_bulk_api_key, Some(Some(key)) if !key.is_empty())
+    );
 
     println!("Log Batchsize: {}", settings.log_batchsize);
     println!("Log Chunksize: {}", settings.log_chunk_size);
@@ -682,13 +902,118 @@ pub fn print_settings(settings: &Settings) {
     println!("")
 }
 
+fn non_negative_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn non_negative_usize(value: i64) -> usize {
+    usize::try_from(value).unwrap_or_else(|_| if value < 0 { 0 } else { usize::MAX })
+}
+
+fn non_negative_u32(value: i64) -> u32 {
+    u32::try_from(value).unwrap_or_else(|_| if value < 0 { 0 } else { u32::MAX })
+}
+
+fn non_negative_i32(value: i64) -> i32 {
+    if value < 0 {
+        0
+    } else {
+        i32::try_from(value).unwrap_or(i32::MAX)
+    }
+}
+
+fn valid_port_candidate(value: i64) -> u16 {
+    u16::try_from(value).unwrap_or_else(|_| if value < 0 { 0 } else { u16::MAX })
+}
+
+/// Apply numeric UI/TOML values without ever casting a negative signed value
+/// into an enormous unsigned integer. Bounds and cross-field relationships are
+/// handled by `normalize_migrated` immediately afterwards.
+fn apply_numeric_updates(settings: &mut Settings, updates: &HashMap<String, toml::Value>) {
+    macro_rules! u64_value {
+        ($key:literal, $field:ident) => {
+            if let Some(value) = updates.get($key).and_then(toml::Value::as_integer) {
+                settings.$field = non_negative_u64(value);
+            }
+        };
+    }
+    macro_rules! usize_value {
+        ($key:literal, $field:ident) => {
+            if let Some(value) = updates.get($key).and_then(toml::Value::as_integer) {
+                settings.$field = non_negative_usize(value);
+            }
+        };
+    }
+
+    u64_value!("crawl_timeout", crawl_timeout);
+    u64_value!("client_timeout", client_timeout);
+    u64_value!("client_connect_timeout", client_connect_timeout);
+    usize_value!("redirect_policy", redirect_policy);
+    if let Some(value) = updates.get("max_retries").and_then(toml::Value::as_integer) {
+        settings.max_retries = non_negative_u32(value);
+    }
+    u64_value!("base_delay", base_delay);
+    u64_value!("max_delay", max_delay);
+    u64_value!("min_crawl_delay", min_crawl_delay);
+    usize_value!("max_urls_stored", max_urls_stored);
+    usize_value!("concurrent_requests", concurrent_requests);
+    usize_value!("batch_size", batch_size);
+    usize_value!("db_batch_size", db_batch_size);
+    usize_value!("links_max_concurrent_requests", links_max_concurrent_requests);
+    usize_value!("links_initial_task_capacity", links_initial_task_capacity);
+    usize_value!("links_max_retries", links_max_retries);
+    u64_value!("links_retry_delay", links_retry_delay);
+    u64_value!("links_request_timeout", links_request_timeout);
+    usize_value!("log_batchsize", log_batchsize);
+    usize_value!("log_chunk_size", log_chunk_size);
+    u64_value!("log_sleep_stream_duration", log_sleep_stream_duration);
+    usize_value!("log_capacity", log_capacity);
+    // Accept both the persisted field name and the legacy UI key.
+    if let Some(value) = updates
+        .get("log_project_chunk_size")
+        .or_else(|| updates.get("log_chunk_size_project"))
+        .and_then(toml::Value::as_integer)
+    {
+        settings.log_project_chunk_size = non_negative_usize(value);
+    }
+    usize_value!("log_file_upload_size", log_file_upload_size);
+    if let Some(value) = updates.get("gsc_row_limit").and_then(toml::Value::as_integer) {
+        settings.gsc_row_limit = non_negative_i32(value);
+    }
+    usize_value!("javascript_concurrency", javascript_concurrency);
+    u64_value!("stall_check_interval", stall_check_interval);
+    u64_value!("max_pending_time", max_pending_time);
+    usize_value!("max_depth", max_depth);
+    usize_value!("max_urls_per_domain", max_urls_per_domain);
+    u64_value!("links_pool_idle_timeout", links_pool_idle_timeout);
+    usize_value!("links_max_idle_per_host", links_max_idle_per_host);
+    usize_value!("db_chunk_size_domain_crawler", db_chunk_size_domain_crawler);
+
+    if let Some(value) = updates.get("links_jitter_factor") {
+        if let Some(value) = value
+            .as_float()
+            .or_else(|| value.as_integer().map(|integer| integer as f64))
+        {
+            settings.links_jitter_factor = value as f32;
+        }
+    }
+
+    if let Some(value) = updates
+        .get("axum_api_port")
+        .or_else(|| updates.get("axum_api_server_port"))
+        .and_then(toml::Value::as_integer)
+    {
+        settings.axum_api_port = valid_port_candidate(value);
+    }
+}
+
 pub async fn override_settings(updates: &str) -> Result<Settings, String> {
     // Load current settings or create new ones
     let mut settings = init_settings().await?;
 
     // Parse updates into a HashMap
-    let updates: HashMap<String, toml::Value> =
-        toml::from_str(updates).map_err(|e| format!("Failed to parse updates: {}", e))?;
+    let updates: HashMap<String, toml::Value> = parse_updates(updates)?;
+    apply_numeric_updates(&mut settings, &updates);
 
     if let Some(val) = updates.get("date_created").and_then(|v| v.as_str()) {
         settings.date_created = val.to_string();
@@ -700,60 +1025,6 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
         .and_then(|v| v.as_str())
     {
         settings.page_speed_bulk_api_key = Some(Some(val.to_string()));
-    }
-
-    if let Some(val) = updates.get("crawl_timeout").and_then(|v| v.as_integer()) {
-        settings.crawl_timeout = val as u64;
-    }
-
-    if let Some(val) = updates.get("client_timeout").and_then(|v| v.as_integer()) {
-        settings.client_timeout = val as u64;
-    }
-
-    if let Some(val) = updates
-        .get("client_connect_timeout")
-        .and_then(|v| v.as_integer())
-    {
-        settings.client_connect_timeout = val as u64;
-    }
-
-    if let Some(val) = updates.get("redirect_policy").and_then(|v| v.as_integer()) {
-        settings.redirect_policy = val as usize;
-    }
-
-    if let Some(val) = updates.get("max_retries").and_then(|v| v.as_integer()) {
-        settings.max_retries = val as u32;
-    }
-
-    if let Some(val) = updates.get("base_delay").and_then(|v| v.as_integer()) {
-        settings.base_delay = val as u64;
-    }
-
-    if let Some(val) = updates.get("max_delay").and_then(|v| v.as_integer()) {
-        settings.max_delay = val as u64;
-    }
-
-    if let Some(val) = updates.get("min_crawl_delay").and_then(|v| v.as_integer()) {
-        settings.min_crawl_delay = val as u64;
-    }
-
-    if let Some(val) = updates.get("max_urls_stored").and_then(|v| v.as_integer()) {
-        settings.max_urls_stored = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("concurrent_requests")
-        .and_then(|v| v.as_integer())
-    {
-        settings.concurrent_requests = val as usize;
-    }
-
-    if let Some(val) = updates.get("batch_size").and_then(|v| v.as_integer()) {
-        settings.batch_size = val as usize;
-    }
-
-    if let Some(val) = updates.get("db_batch_size").and_then(|v| v.as_integer()) {
-        settings.db_batch_size = val as usize;
     }
 
     if let Some(val) = updates.get("list_mode").and_then(|v| v.as_bool()) {
@@ -773,6 +1044,12 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
             .filter_map(|v| v.as_str())
             .map(|s| s.to_string())
             .collect();
+    }
+    if let Some(val) = updates.get("http_user_agent").and_then(|v| v.as_str()) {
+        settings.http_user_agent = val.trim().to_string();
+    }
+    if let Some(val) = updates.get("robots_user_agent").and_then(|v| v.as_str()) {
+        settings.robots_user_agent = val.trim().to_string();
     }
 
     // Include / Exclude accept either a TOML array or a newline-separated
@@ -811,41 +1088,6 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
         settings.html = val;
     }
 
-    if let Some(val) = updates
-        .get("links_max_concurrent_requests")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_max_concurrent_requests = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("links_initial_task_capacity")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_initial_task_capacity = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("links_max_retries")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_max_retries = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("links_retry_delay")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_retry_delay = val as u64;
-    }
-
-    if let Some(val) = updates
-        .get("links_request_timeout")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_request_timeout = val as u64;
-    }
-
     if let Some(val) = updates.get("page_speed_bulk").and_then(|v| v.as_bool()) {
         settings.page_speed_bulk = val;
     }
@@ -858,46 +1100,8 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
             .collect();
     }
 
-    // Add the new settings
-    if let Some(val) = updates.get("log_batchsize").and_then(|v| v.as_integer()) {
-        settings.log_batchsize = val as usize;
-    }
-
-    if let Some(val) = updates.get("log_chunk_size").and_then(|v| v.as_integer()) {
-        settings.log_chunk_size = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("log_sleep_stream_duration")
-        .and_then(|v| v.as_integer())
-    {
-        settings.log_sleep_stream_duration = val as u64;
-    }
-
-    if let Some(val) = updates.get("log_capacity").and_then(|v| v.as_integer()) {
-        settings.log_capacity = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("log_chunk_size_project")
-        .and_then(|v| v.as_integer())
-    {
-        settings.log_project_chunk_size = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("log_file_upload_size")
-        .and_then(|v| v.as_integer())
-    {
-        settings.log_file_upload_size = val as usize;
-    }
-
     if let Some(val) = updates.get("extract_ngrams").and_then(|v| v.as_bool()) {
         settings.extract_ngrams = val;
-    }
-
-    if let Some(val) = updates.get("gsc_row_limit").and_then(|v| v.as_integer()) {
-        settings.gsc_row_limit = val as i32;
     }
 
     if let Some(val) = updates
@@ -905,59 +1109,6 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
         .and_then(|v| v.as_bool())
     {
         settings.javascript_rendering = val;
-    }
-
-    if let Some(val) = updates
-        .get("javascript_concurrency")
-        .and_then(|v| v.as_integer())
-    {
-        settings.javascript_concurrency = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("stall_check_interval")
-        .and_then(|v| v.as_integer())
-    {
-        settings.stall_check_interval = val as u64;
-    }
-
-    if let Some(val) = updates
-        .get("max_pending_time")
-        .and_then(|v| v.as_integer())
-    {
-        settings.max_pending_time = val as u64;
-    }
-
-    if let Some(val) = updates.get("max_depth").and_then(|v| v.as_integer()) {
-        settings.max_depth = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("max_urls_per_domain")
-        .and_then(|v| v.as_integer())
-    {
-        settings.max_urls_per_domain = val as usize;
-    }
-
-    if let Some(val) = updates
-        .get("links_jitter_factor")
-        .and_then(|v| v.as_float())
-    {
-        settings.links_jitter_factor = val as f32;
-    }
-
-    if let Some(val) = updates
-        .get("links_pool_idle_timeout")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_pool_idle_timeout = val as u64;
-    }
-
-    if let Some(val) = updates
-        .get("links_max_idle_per_host")
-        .and_then(|v| v.as_integer())
-    {
-        settings.links_max_idle_per_host = val as usize;
     }
 
     if let Some(val) = updates.get("link_score_enabled").and_then(|v| v.as_bool()) {
@@ -969,13 +1120,6 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
         .and_then(|v| v.as_bool())
     {
         settings.duplicate_content_check_enabled = val;
-    }
-
-    if let Some(val) = updates
-        .get("db_chunk_size_domain_crawler")
-        .and_then(|v| v.as_integer())
-    {
-        settings.db_chunk_size_domain_crawler = val as usize;
     }
 
     if let Some(val) = updates.get("adaptive_crawling").and_then(|v| v.as_bool()) {
@@ -1007,10 +1151,6 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
         settings.axum_api_server = val;
     }
 
-    if let Some(val) = updates.get("axum_api_server_port").and_then(|v| v.as_integer()) {
-        settings.axum_api_port = val as u16;
-    }
-
     if let Some(val) = updates.get("axum_api_server_host").and_then(|v| v.as_str()) {
         settings.axum_api_host = val.to_string();
     }
@@ -1031,24 +1171,28 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
             .collect();
     }
 
-    // Explicit file writing with flush
-    let config_path = Settings::config_path()?;
-    let toml_str = toml::to_string_pretty(&settings) // prettier formatting
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-
-    let mut file = fs::File::create(&config_path)
-        .await
-        .map_err(|e| format!("Failed to create config file: {}", e))?;
-
-    AsyncWriteExt::write_all(&mut file, toml_str.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-
-    file.flush()
-        .await // Ensure data is written to disk
-        .map_err(|e| format!("Failed to flush config: {}", e))?;
+    settings.normalize_migrated();
+    persist_settings(&settings).await?;
 
     Ok(settings)
+}
+
+fn parse_updates(updates: &str) -> Result<HashMap<String, toml::Value>, String> {
+    if let Ok(json_updates) =
+        serde_json::from_str::<HashMap<String, serde_json::Value>>(updates)
+    {
+        return json_updates
+            .into_iter()
+            .map(|(key, value)| {
+                let value_name = key.clone();
+                toml::Value::try_from(value)
+                    .map(|value| (key, value))
+                    .map_err(|e| format!("Invalid value for {value_name}: {e}"))
+            })
+            .collect();
+    }
+
+    toml::from_str(updates).map_err(|e| format!("Failed to parse updates: {}", e))
 }
 
 #[tauri::command]
@@ -1154,7 +1298,7 @@ pub fn open_config_folder_command() -> Result<(), String> {
 // COMMAND TO GET ANY SETTINGS INTO THE FRONT END TO BE USED
 #[tauri::command]
 pub async fn get_settings_command() -> Result<Settings, String> {
-    let settings = load_settings().await?;
+    let settings = init_settings().await?;
     Ok(settings)
 }
 
@@ -1194,4 +1338,187 @@ pub async fn toggle_javascript_rendering(
         .map_err(|e| format!("Failed to emit event: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_are_already_normalized() {
+        let mut settings = Settings::new();
+        assert!(!settings.normalize_migrated());
+    }
+
+    #[test]
+    fn normalization_repairs_zero_capacities_and_dangerous_extremes() {
+        let mut settings = Settings::new();
+        settings.concurrent_requests = 0;
+        settings.batch_size = 0;
+        settings.javascript_concurrency = 0;
+        settings.links_max_concurrent_requests = 0;
+        settings.links_initial_task_capacity = 0;
+        settings.db_batch_size = 0;
+        settings.db_chunk_size_domain_crawler = 0;
+        settings.max_depth = usize::MAX;
+        settings.max_urls_per_domain = 0;
+        settings.max_urls_stored = 0;
+        settings.max_retries = u32::MAX;
+        settings.links_max_retries = usize::MAX;
+        settings.client_timeout = 0;
+        settings.client_connect_timeout = u64::MAX;
+        settings.crawl_timeout = 0;
+        settings.max_pending_time = 0;
+        settings.stall_check_interval = 0;
+        settings.links_request_timeout = 0;
+        settings.links_pool_idle_timeout = 0;
+        settings.links_max_idle_per_host = 0;
+        settings.base_delay = 9_000;
+        settings.min_crawl_delay = 8_000;
+        settings.max_delay = 1;
+        settings.links_jitter_factor = f32::INFINITY;
+        settings.log_batchsize = 0;
+        settings.log_chunk_size = 0;
+        settings.log_sleep_stream_duration = 0;
+        settings.log_capacity = 0;
+        settings.log_project_chunk_size = 0;
+        settings.log_file_upload_size = 0;
+        settings.gsc_row_limit = 0;
+        settings.axum_api_port = 0;
+        settings.axum_api_host = "   ".to_string();
+
+        assert!(settings.normalize_migrated());
+        assert_eq!(settings.concurrent_requests, 1);
+        assert_eq!(settings.batch_size, 1);
+        assert_eq!(settings.javascript_concurrency, 1);
+        assert_eq!(settings.links_max_concurrent_requests, 1);
+        assert_eq!(settings.links_initial_task_capacity, 1);
+        assert_eq!(settings.db_batch_size, 1);
+        assert_eq!(settings.db_chunk_size_domain_crawler, 1);
+        assert_eq!(settings.max_depth, 1_000);
+        assert_eq!(settings.max_urls_per_domain, 1);
+        assert_eq!(settings.max_urls_stored, 100);
+        assert_eq!(settings.max_retries, MAX_RETRIES);
+        assert_eq!(settings.links_max_retries, MAX_LINK_RETRIES);
+        assert_eq!(settings.client_timeout, 1);
+        assert_eq!(settings.client_connect_timeout, 1);
+        assert_eq!(settings.crawl_timeout, 1);
+        assert_eq!(settings.max_pending_time, 1);
+        assert_eq!(settings.stall_check_interval, 1);
+        assert_eq!(settings.links_request_timeout, 1);
+        assert_eq!(settings.links_pool_idle_timeout, 1);
+        assert_eq!(settings.links_max_idle_per_host, 1);
+        assert_eq!(settings.max_delay, 9_000);
+        assert_eq!(settings.links_jitter_factor, 0.6);
+        assert_eq!(settings.log_batchsize, 1);
+        assert_eq!(settings.log_chunk_size, 1);
+        assert_eq!(settings.log_sleep_stream_duration, 1);
+        assert_eq!(settings.log_capacity, 1);
+        assert_eq!(settings.log_project_chunk_size, 1);
+        assert_eq!(settings.log_file_upload_size, 1);
+        assert_eq!(settings.gsc_row_limit, 1);
+        assert_eq!(settings.axum_api_port, 3000);
+        assert_eq!(settings.axum_api_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn negative_json_updates_never_wrap_to_unsigned_maxima() {
+        let updates = parse_updates(
+            r#"{
+                "concurrent_requests": -1,
+                "batch_size": -2,
+                "db_batch_size": -3,
+                "javascript_concurrency": -4,
+                "links_max_concurrent_requests": -5,
+                "client_timeout": -6,
+                "crawl_timeout": -7,
+                "max_retries": -8,
+                "base_delay": -9,
+                "max_urls_per_domain": -10,
+                "max_urls_stored": -11,
+                "gsc_row_limit": -12,
+                "axum_api_port": -13
+            }"#,
+        )
+        .expect("negative JSON should still parse as signed integers");
+        let mut settings = Settings::new();
+
+        apply_numeric_updates(&mut settings, &updates);
+
+        assert_eq!(settings.concurrent_requests, 0);
+        assert_eq!(settings.batch_size, 0);
+        assert_eq!(settings.db_batch_size, 0);
+        assert_eq!(settings.javascript_concurrency, 0);
+        assert_eq!(settings.links_max_concurrent_requests, 0);
+        assert_eq!(settings.client_timeout, 0);
+        assert_eq!(settings.crawl_timeout, 0);
+        assert_eq!(settings.max_retries, 0);
+        assert_eq!(settings.base_delay, 0);
+        assert_eq!(settings.max_urls_per_domain, 0);
+        assert_eq!(settings.max_urls_stored, 0);
+        assert_eq!(settings.gsc_row_limit, 0);
+        assert_eq!(settings.axum_api_port, 0);
+
+        settings.normalize_migrated();
+        assert_eq!(settings.concurrent_requests, 1);
+        assert_eq!(settings.batch_size, 1);
+        assert_eq!(settings.db_batch_size, 1);
+        assert_eq!(settings.javascript_concurrency, 1);
+        assert_eq!(settings.links_max_concurrent_requests, 1);
+        assert_eq!(settings.client_timeout, 1);
+        assert_eq!(settings.crawl_timeout, 1);
+        assert_eq!(settings.max_urls_per_domain, 1);
+        assert_eq!(settings.max_urls_stored, 100);
+        assert_eq!(settings.gsc_row_limit, 1);
+        assert_eq!(settings.axum_api_port, 3000);
+    }
+
+    #[test]
+    fn normalization_enforces_timeout_delay_and_pool_relationships() {
+        let updates = parse_updates(
+            r#"
+                concurrent_requests = 4
+                links_max_concurrent_requests = 2
+                links_max_idle_per_host = 100
+                client_timeout = 30
+                client_connect_timeout = 90
+                crawl_timeout = 10
+                max_pending_time = 5
+                stall_check_interval = 99
+                base_delay = 100
+                min_crawl_delay = 200
+                max_delay = 1
+            "#,
+        )
+        .unwrap();
+        let mut settings = Settings::new();
+        apply_numeric_updates(&mut settings, &updates);
+
+        settings.normalize_migrated();
+
+        assert_eq!(settings.client_connect_timeout, 30);
+        assert_eq!(settings.crawl_timeout, 30);
+        assert_eq!(settings.max_pending_time, 30);
+        assert_eq!(settings.stall_check_interval, 30);
+        assert_eq!(settings.max_delay, 200);
+        assert_eq!(settings.links_max_idle_per_host, 2);
+    }
+
+    #[test]
+    fn oversized_updates_saturate_then_normalize_to_documented_limits() {
+        let updates = parse_updates(&format!(
+            "concurrent_requests = {}\nmax_retries = {}\naxum_api_port = {}",
+            i64::MAX,
+            i64::MAX,
+            i64::MAX
+        ))
+        .unwrap();
+        let mut settings = Settings::new();
+        apply_numeric_updates(&mut settings, &updates);
+        settings.normalize_migrated();
+
+        assert_eq!(settings.concurrent_requests, MAX_CRAWL_CONCURRENCY);
+        assert_eq!(settings.max_retries, MAX_RETRIES);
+        assert_eq!(settings.axum_api_port, u16::MAX);
+    }
 }
