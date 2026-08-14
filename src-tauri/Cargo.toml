@@ -105,3 +105,10 @@ headless_chrome = { version = "1.0.10", features = ["fetch"] }
 
 [patch.crates-io]
 genai = { path = "vendor/genai" }
+
+[profile.release]
+# The Android library shipped at 70 MB per architecture, nearly all of it debug
+# symbols, which made the universal APK 238 MB against the 62 MB of 0.1.0.
+# Stripping is the difference between an app someone downloads on a phone data
+# plan and one they give up on.
+strip = true
