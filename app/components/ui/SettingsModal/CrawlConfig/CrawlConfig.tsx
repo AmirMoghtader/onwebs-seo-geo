@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
-import { CheckCircle2, AlertCircle, Filter, Ban, Bot, Gauge, ListChecks } from "lucide-react";
+import { CheckCircle2, AlertCircle, Filter, Ban, Bot, Gauge, ListChecks, KeyRound } from "lucide-react";
 
 const SECTIONS = [
   { key: "listMode", label: "Mode", icon: ListChecks },
@@ -21,6 +21,7 @@ const SECTIONS = [
   { key: "exclude", label: "Exclude", icon: Ban },
   { key: "userAgent", label: "User-Agent", icon: Bot },
   { key: "speed", label: "Speed", icon: Gauge },
+  { key: "connectors", label: "کانکتورها", icon: KeyRound },
 ];
 
 
@@ -96,6 +97,7 @@ const CrawlConfig = ({ onClose }: any) => {
   const [include, setInclude] = useState("");
   const [exclude, setExclude] = useState("");
   const [userAgent, setUserAgent] = useState(UA_PRESETS[0].value);
+  const [openPageRankKey, setOpenPageRankKey] = useState("");
   const [robotsUserAgent, setRobotsUserAgent] = useState("OnwebsSEO");
   const [concurrent, setConcurrent] = useState(5);
   const [baseDelay, setBaseDelay] = useState(1500);
@@ -122,6 +124,8 @@ const CrawlConfig = ({ onClose }: any) => {
           setUserAgent(s.http_user_agent);
         else if (Array.isArray(s.user_agents) && s.user_agents[0])
           setUserAgent(s.user_agents[0]);
+        if (typeof s.open_page_rank_api_key === "string")
+          setOpenPageRankKey(s.open_page_rank_api_key);
         if (typeof s.robots_user_agent === "string" && s.robots_user_agent)
           setRobotsUserAgent(s.robots_user_agent);
         if (typeof s.concurrent_requests === "number") setConcurrent(s.concurrent_requests);
@@ -157,6 +161,7 @@ const CrawlConfig = ({ onClose }: any) => {
           include_patterns: include,
           exclude_patterns: exclude,
           http_user_agent: userAgent,
+          open_page_rank_api_key: openPageRankKey.trim(),
           robots_user_agent: robotsUserAgent,
           concurrent_requests: concurrent,
           base_delay: baseDelay,
@@ -300,6 +305,36 @@ const CrawlConfig = ({ onClose }: any) => {
               blurb="اگر خالی باشد همه‌جا کراول می‌شود. اگر پر باشد، فقط URLهایی که با یکی از این الگوها بخوانند کراول می‌شوند — برای محدود کردن کراول به یک بخش سایت. Exclude بر Include اولویت دارد."
               examples={["/blog/", "^https://onwebs\\.ir/en/"]}
             />
+          )}
+
+          {section === "connectors" && (
+            <>
+              <h2 className="text-sm font-bold text-slate-800 dark:text-white mb-1">
+                Open PageRank
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-white/50 mb-3">
+                امتیاز اعتبار دامنه. اپ با یک کلید پیش‌فرض کار می‌کند که بین همهٔ
+                کاربران مشترک است و سهمیه‌اش محدود — کلید خودت را بگذار تا سهمیهٔ
+                اختصاصی داشته باشی.
+              </p>
+              <ol className="text-[11px] text-slate-500 dark:text-white/50 mb-3 list-decimal pr-4 space-y-1">
+                <li>به openpagerank.keywordseverywhere.com برو</li>
+                <li>با حساب Keywords Everywhere وارد شو (رایگان، بدون کارت)</li>
+                <li>در داشبورد یک OPR API Key بساز و کپی کن</li>
+                <li>اینجا جای‌گذاری کن و ذخیره بزن — رایگان: ۳۰٬۰۰۰ دامنه در ماه</li>
+              </ol>
+              <input
+                dir="ltr"
+                value={openPageRankKey}
+                onChange={(e) => setOpenPageRankKey(e.target.value)}
+                placeholder="OPR API Key"
+                className="w-full text-left text-xs font-mono px-2 py-1.5 rounded border dark:border-brand-dark bg-white dark:bg-brand-darker"
+              />
+              <p className="text-[11px] text-slate-400 mt-2">
+                خالی بگذاری، این قابلیت خاموش می‌شود و هیچ دامنه‌ای به سرور
+                بیرونی فرستاده نمی‌شود.
+              </p>
+            </>
           )}
 
           {section === "userAgent" && (

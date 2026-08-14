@@ -23,6 +23,12 @@ pub fn default_body_read_attempts() -> u32 {
     3
 }
 
+/// Inherited from RustySEO, which hardcoded it. Kept as the default so a new
+/// install has a working connector; replaced per-user from Settings.
+pub fn default_open_page_rank_key() -> String {
+    "44ss8gok0oo0c8kcckog0sgg8sswoswccgo08g80".to_string()
+}
+
 pub fn default_http_user_agent() -> String {
     format!(
         "Mozilla/5.0 (compatible; OnwebsSEO/{}; +https://github.com/AmirMoghtader/onwebs-seo-geo)",
@@ -138,6 +144,14 @@ pub struct Settings {
     /// crawl was that, and the same pages read fine when asked again.
     #[serde(default = "default_body_read_attempts")]
     pub body_read_attempts: u32,
+    /// Open PageRank API key for the domain-authority lookup.
+    ///
+    /// Defaults to the key RustySEO ships with, so the feature works out of
+    /// the box on a fresh install. That key is shared by every user of every
+    /// fork and its monthly allowance is finite — the onboarding tour asks for
+    /// your own, and anything set here stays in the local config file.
+    #[serde(default = "default_open_page_rank_key")]
+    pub open_page_rank_api_key: String,
     /// Maximum retries for failed requests
     pub max_retries: u32,
 
@@ -264,6 +278,7 @@ impl Settings {
             client_connect_timeout: 15,
             redirect_policy: 5,
             max_retries: 2,
+            open_page_rank_api_key: default_open_page_rank_key(),
             body_read_attempts: default_body_read_attempts(),
 
             // --- JavaScript & Rendering ---
@@ -410,6 +425,7 @@ impl Settings {
         s.push_str("\n# --- JavaScript & Rendering ---\n");
         s.push_str("# Whether to expect HTML content\n");
         s.push_str(&format!("body_read_attempts = {}\n", self.body_read_attempts));
+        s.push_str(&format!("open_page_rank_api_key = \"{}\"\n", self.open_page_rank_api_key));
         s.push_str(&format!("html = {}\n", self.html));
 
         s.push_str("# Enable Headless Chrome rendering\n");
@@ -1047,6 +1063,9 @@ pub async fn override_settings(updates: &str) -> Result<Settings, String> {
     }
     if let Some(val) = updates.get("http_user_agent").and_then(|v| v.as_str()) {
         settings.http_user_agent = val.trim().to_string();
+    }
+    if let Some(val) = updates.get("open_page_rank_api_key").and_then(|v| v.as_str()) {
+        settings.open_page_rank_api_key = val.trim().to_string();
     }
     if let Some(val) = updates.get("robots_user_agent").and_then(|v| v.as_str()) {
         settings.robots_user_agent = val.trim().to_string();

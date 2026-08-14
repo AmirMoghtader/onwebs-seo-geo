@@ -1,4 +1,6 @@
 // Import necessary modules and dependencies
+mod page_rank;
+
 use dotenv::dotenv;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
@@ -576,11 +578,34 @@ pub async fn crawl(url: String) -> Result<CrawlResult, String> {
         headings: headings.clone(),
     };
 
-    // PageRank is not available from a local crawl. The previous implementation
-    // silently sent every audited domain to OpenPageRank using a credential
-    // embedded in the binary. Keep the legacy response shape without making an
-    // undisclosed third-party request; a future connector can make this opt-in.
-    let page_rank = vec![0.0];
+    // Domain authority, only when a key is configured — see page_rank.rs for
+    // why this is a setting rather than a credential baked into the binary.
+    // A slow or unreachable service must not hold up a local audit, so it gets
+    // two seconds and is otherwise left empty.
+    let page_rank = match crate::settings::settings::load_settings().await {
+        Ok(settings) => {
+            let lookup = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                page_rank::fetch_page_rank(&normalized_url, &settings.open_page_rank_api_key),
+            );
+            match lookup.await {
+                Ok(Ok(Some(score))) => vec![score],
+                Ok(Ok(None)) => Vec::new(),
+                Ok(Err(error)) => {
+                    tracing::debug!("PageRank lookup failed for {}: {}", normalized_url, error);
+                    Vec::new()
+                }
+                Err(_) => {
+                    tracing::debug!("PageRank lookup timed out for {}", normalized_url);
+                    Vec::new()
+                }
+            }
+        }
+        Err(error) => {
+            tracing::debug!("PageRank lookup skipped, settings unreadable: {}", error);
+            Vec::new()
+        }
+    };
 
     println!("Page URL length: {:?}", url_length);
     db::refresh_links_table().expect("Failed to refresh links table");

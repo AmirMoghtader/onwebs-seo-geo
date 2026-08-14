@@ -1,17 +1,40 @@
 // @ts-nocheck
 "use client";
-// The Android build's entire UI: one search box, one score, one issue list.
-// It talks to the same Rust crawler commands as the desktop deep crawler but
-// keeps its own tiny state — none of the desktop's 73-column machinery.
+// The Android build's entire UI. It talks to the same Rust crawler commands as
+// the desktop deep crawler but keeps its own tiny state — none of the desktop's
+// 73-column machinery.
+//
+// Two rules shape everything below, and breaking either one makes the app feel
+// like a different product:
+//
+//   1. Tapping anything opens a sheet from the bottom. Nothing expands in
+//      place, nothing navigates away. One `<Sheet>` renders them all, so the
+//      motion, the grabber and the dismiss behaviour cannot drift apart.
+//   2. Icons are drawn on the background in one colour. No tinted tiles, no
+//      per-category hues — the yellow is the only accent the eye has to track,
+//      which is what lets a very dark screen stay readable.
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 
-const NAVY = "#1E3A6F";
-const NAVY_DEEP = "#16294F";
-const ACCENT = "#2B6CC4";
-const CANVAS = "#EEF2F9";
+// Near-black rather than black: a true #000 makes the OLED edges of a phone
+// bleed into the bezel and hides every border we draw.
+const INK = "#0A0A0B";
+const SURFACE = "#141416";
+const RAISED = "#1B1B1E";
+const LINE = "#26262A";
+const YELLOW = "#F5C518";
+const TEXT = "#F4F4F5";
+const MUTED = "#8A8A92";
+
+// Severity still needs to be distinguishable, but as text weight rather than
+// six competing hues. Only genuine alarm earns a colour of its own.
+const SEV = {
+  critical: { label: "بحرانی", color: "#F87171" },
+  warning: { label: "هشدار", color: YELLOW },
+  notice: { label: "توجه", color: MUTED },
+};
 
 type Issue = {
   key: string;
@@ -23,13 +46,9 @@ type Issue = {
   urls: string[];
 };
 
-// How many affected URLs each issue card keeps for the expandable list. The
-// count stays exact; only the list is capped so a 50k-page crawl can't blow
-// up the phone's memory.
+// How many affected URLs each issue keeps for its list. The count stays exact;
+// only the list is capped so a 50k-page crawl can't blow up the phone's memory.
 const URL_CAP = 80;
-
-// One place that turns raw crawler pages into the mobile verdict. Weights are
-// per-affected-page ratios so a 10-page site and a 10k-page site score alike.
 function analyse(pages: any[]): { score: number; issues: Issue[] } {
   const total = pages.length || 1;
   const issues: Issue[] = [];
@@ -112,46 +131,136 @@ function analyse(pages: any[]): { score: number; issues: Issue[] } {
   return { score, issues };
 }
 
+
 function grade(score: number) {
-  if (score >= 90) return { label: "عالی", color: "#16A34A" };
-  if (score >= 75) return { label: "خوب", color: "#65A30D" };
-  if (score >= 50) return { label: "متوسط", color: "#D97706" };
-  return { label: "ضعیف", color: "#DC2626" };
+  if (score >= 90) return { label: "عالی", tone: "#4ADE80" };
+  if (score >= 75) return { label: "خوب", tone: YELLOW };
+  if (score >= 50) return { label: "متوسط", tone: "#FB923C" };
+  return { label: "ضعیف", tone: "#F87171" };
 }
 
-const SEV = {
-  critical: { label: "بحرانی", bg: "#FEE2E2", fg: "#DC2626" },
-  warning: { label: "هشدار", bg: "#FEF3C7", fg: "#D97706" },
-  notice: { label: "نکته", bg: "#E0EAFB", fg: ACCENT },
+// One stroke weight, one colour, no fill. Passing a size keeps them optically
+// even whether they sit in a row of six or alone above a sheet title.
+const Icon = ({ d, size = 22, color = YELLOW, extra = null }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+    <path d={d} stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    {extra}
+  </svg>
+);
+
+const PATHS = {
+  technical:
+    "M10.3 4.3a2 2 0 013.4 0l.6 1a2 2 0 002.2.9l1.1-.3a2 2 0 012.4 2.4l-.3 1.1a2 2 0 00.9 2.2l1 .6a2 2 0 010 3.4l-1 .6a2 2 0 00-.9 2.2l.3 1.1a2 2 0 01-2.4 2.4l-1.1-.3a2 2 0 00-2.2.9l-.6 1a2 2 0 01-3.4 0l-.6-1a2 2 0 00-2.2-.9l-1.1.3a2 2 0 01-2.4-2.4l.3-1.1a2 2 0 00-.9-2.2l-1-.6a2 2 0 010-3.4l1-.6a2 2 0 00.9-2.2l-.3-1.1a2 2 0 012.4-2.4l1.1.3a2 2 0 002.2-.9l.6-1z",
+  content: "M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2zM14 3v5h5M9 13h6M9 17h4",
+  links:
+    "M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.6-5.6l-1.2 1.2M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.6 5.6l1.2-1.2",
+  index: "M11 4.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zM15.6 15.6l4.7 4.7M8.5 11l1.8 1.8 3.2-3.6",
+  speed: "M13 2L4.5 13.5H11L9.5 22 19 10h-6.5L13 2z",
+  geo: "M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3z",
+  search: "M11 19a8 8 0 100-16 8 8 0 000 16zM21 21l-4.3-4.3",
+  history: "M12 7v5l3.5 2M3.5 12a8.5 8.5 0 102.6-6.1M3.5 5.5V10h4.5",
+  profile: "M4.5 20a7.5 7.5 0 0115 0M12 11a4 4 0 100-8 4 4 0 000 8z",
+  chevron: "M9 6l6 6-6 6",
+  close: "M6 6l12 12M18 6L6 18",
+  trash: "M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13",
 };
 
-// The six audit areas shown as an IMDb-style card grid under the search bar.
 const CATEGORIES = [
-  { key: "technical", title: "سئو تکنیکال", tint: "#2B6CC4",
-    desc: "استتوس‌کدها و ساختار فنی",
-    more: "صفحات خراب 4xx/5xx، زنجیره‌ی ریدایرکت‌ها، robots.txt و خطاهای سروری — پایه‌ای که بقیه‌ی سئو روی آن می‌ایستد.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M10.3 4.3a2 2 0 013.4 0l.6 1a2 2 0 002.2.9l1.1-.3a2 2 0 012.4 2.4l-.3 1.1a2 2 0 00.9 2.2l1 .6a2 2 0 010 3.4l-1 .6a2 2 0 00-.9 2.2l.3 1.1a2 2 0 01-2.4 2.4l-1.1-.3a2 2 0 00-2.2.9l-.6 1a2 2 0 01-3.4 0l-.6-1a2 2 0 00-2.2-.9l-1.1.3a2 2 0 01-2.4-2.4l.3-1.1a2 2 0 00-.9-2.2l-1-.6a2 2 0 010-3.4l1-.6a2 2 0 00.9-2.2l-.3-1.1a2 2 0 012.4-2.4l1.1.3a2 2 0 002.2-.9l.6-1z" stroke="currentColor" strokeWidth="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5"/></svg>) },
-  { key: "content", title: "محتوا", tint: "#7C3AED",
-    desc: "تایتل، متا و کیفیت متن",
-    more: "تایتل‌های تکراری یا بلند، توضیحات متای خالی، H1 و صفحات کم‌محتوا — چیزهایی که مستقیم روی کلیک و رتبه اثر می‌گذارند.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" stroke="currentColor" strokeWidth="1.5"/><path d="M14 3v5h5M9 13h6M9 17h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>) },
-  { key: "links", title: "لینک‌ها", tint: "#0891B2",
-    desc: "لینک شکسته و ریدایرکت",
-    more: "لینک‌های داخلی که به صفحه‌ی مرده می‌روند یا از چند ریدایرکت رد می‌شوند، اعتبار و بودجه‌ی کراول را هدر می‌دهند.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.6-5.6l-1.2 1.2M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.6 5.6l1.2-1.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>) },
-  { key: "index", title: "ایندکس", tint: "#16A34A",
-    desc: "دیده‌شدن در گوگل",
-    more: "کدام صفحه‌ها ایندکس می‌شوند و کدام‌ها با noindex یا robots بیرون مانده‌اند — تا محتوایی که برایش زحمت کشیدی گم نشود.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M16 16l4.3 4.3M8.5 11l1.8 1.8 3.2-3.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>) },
-  { key: "speed", title: "سرعت", tint: "#D97706",
-    desc: "زمان پاسخ و حجم صفحه",
-    more: "پاسخ کند سرور و صفحات سنگین هم کاربر را می‌پراند هم خزنده‌ی گوگل را — سرعت جزو فاکتورهای رتبه است.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M13 2L4.5 13.5H11L9.5 22 19 10h-6.5L13 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/></svg>) },
-  { key: "geo", title: "GEO و هوش مصنوعی", tint: "#DB2777",
-    desc: "آمادگی برای جستجوی AI",
-    more: "ChatGPT و Perplexity هم سایتت را می‌خوانند؛ ساختار تمیز و محتوای قابل استناد یعنی در جواب‌های AI هم دیده شوی.",
-    icon: (c) => (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{color:c}}><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/><path d="M18.5 15l.9 2.3 2.1.7-2.1.7-.9 2.3-.9-2.3-2.1-.7 2.1-.7.9-2.3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>) },
+  { key: "technical", title: "سئو تکنیکال", desc: "استتوس‌کدها و ساختار فنی",
+    more: "صفحات خراب 4xx/5xx، زنجیره‌ی ریدایرکت‌ها، robots.txt و خطاهای سروری — پایه‌ای که بقیه‌ی سئو روی آن می‌ایستد." },
+  { key: "content", title: "محتوا", desc: "تایتل، متا و کیفیت متن",
+    more: "تایتل‌های تکراری یا بلند، توضیحات متای خالی، H1 و صفحات کم‌محتوا — چیزهایی که مستقیم روی کلیک و رتبه اثر می‌گذارند." },
+  { key: "links", title: "لینک‌ها", desc: "لینک شکسته و ریدایرکت",
+    more: "لینک‌های داخلی که به صفحه‌ی مرده می‌روند یا از چند ریدایرکت رد می‌شوند، اعتبار و بودجه‌ی کراول را هدر می‌دهند." },
+  { key: "index", title: "ایندکس", desc: "دیده‌شدن در گوگل",
+    more: "کدام صفحه‌ها ایندکس می‌شوند و کدام‌ها با noindex یا robots بیرون مانده‌اند — تا محتوایی که برایش زحمت کشیدی گم نشود." },
+  { key: "speed", title: "سرعت", desc: "زمان پاسخ و حجم صفحه",
+    more: "پاسخ کند سرور و صفحات سنگین هم کاربر را می‌پراند هم خزنده‌ی گوگل را — سرعت جزو فاکتورهای رتبه است." },
+  { key: "geo", title: "GEO و هوش مصنوعی", desc: "آمادگی برای جستجوی AI",
+    more: "ChatGPT و Perplexity هم سایتت را می‌خوانند؛ ساختار تمیز و محتوای قابل استناد یعنی در جواب‌های AI هم دیده شوی." },
 ];
+
+/** Every panel in the app. Rendered once, driven by whatever `sheet` holds. */
+function Sheet({ open, title, subtitle, onClose, children }) {
+  // A sheet that stays mounted would keep the page scrollable behind it, which
+  // on a phone reads as the sheet being stuck to nothing.
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; };
+  }, [open]);
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
+            className="fixed inset-0 z-[90]"
+            style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(2px)" }}
+          />
+          <motion.div
+            initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+            transition={{ type: "spring", stiffness: 380, damping: 38 }}
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={{ top: 0, bottom: 0.4 }}
+            onDragEnd={(_, info) => {
+              // Flick down, or drag past a third of the way — the two gestures
+              // people actually use to dismiss a sheet.
+              if (info.offset.y > 120 || info.velocity.y > 600) onClose();
+            }}
+            className="fixed inset-x-0 bottom-0 z-[91] rounded-t-3xl overflow-hidden flex flex-col"
+            style={{
+              background: SURFACE,
+              borderTop: `1px solid ${LINE}`,
+              maxHeight: "88vh",
+              boxShadow: "0 -24px 60px rgba(0,0,0,0.6)",
+            }}
+          >
+            <div className="pt-2.5 pb-1 flex justify-center shrink-0">
+              <div className="h-1 w-10 rounded-full" style={{ background: LINE }} />
+            </div>
+            <div className="px-5 pb-3 flex items-start gap-3 shrink-0">
+              <div className="flex-1 min-w-0">
+                <h2 className="text-base font-extrabold" style={{ color: TEXT }}>{title}</h2>
+                {subtitle && (
+                  <p className="text-[11px] mt-0.5" style={{ color: MUTED }}>{subtitle}</p>
+                )}
+              </div>
+              <button onClick={onClose} aria-label="بستن" className="p-1 -m-1 shrink-0">
+                <Icon d={PATHS.close} size={18} color={MUTED} />
+              </button>
+            </div>
+            <div className="px-5 pb-8 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+              {children}
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/** A tappable row. The whole thing is the target — never just the chevron. */
+const Row = ({ icon, title, meta, onClick, right = null }) => (
+  <button
+    onClick={onClick}
+    className="w-full flex items-center gap-3 py-3 text-right active:opacity-60 transition-opacity"
+    style={{ borderBottom: `1px solid ${LINE}` }}
+  >
+    {icon && <Icon d={icon} size={20} />}
+    <span className="flex-1 min-w-0">
+      <span className="block text-[13px] font-bold truncate" style={{ color: TEXT }}>{title}</span>
+      {meta && <span className="block text-[11px] mt-0.5 truncate" style={{ color: MUTED }}>{meta}</span>}
+    </span>
+    {right}
+    <Icon d={PATHS.chevron} size={16} color={MUTED} />
+  </button>
+);
 
 export default function MobilePage() {
   const [url, setUrl] = useState("");
@@ -159,22 +268,23 @@ export default function MobilePage() {
   const [count, setCount] = useState(0);
   const pagesRef = useRef<any[]>([]);
   const [result, setResult] = useState<{ score: number; issues: Issue[] } | null>(null);
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const [openCat, setOpenCat] = useState<string | null>(null);
-
-  // IMDb-style bottom bar: history / search (center, default) / profile.
   const [tab, setTab] = useState<"history" | "search" | "profile">("search");
   const [history, setHistory] = useState<any[]>([]);
   const [profile, setProfile] = useState<{ name: string; email: string } | null>(null);
   const [formName, setFormName] = useState("");
   const [formEmail, setFormEmail] = useState("");
+  /** True when the numbers on screen are the browser sample, not a crawl. */
+  const [demoSample, setDemoSample] = useState(false);
+
+  // The single source of what is on screen above the page: { kind, data }.
+  const [sheet, setSheet] = useState<{ kind: string; data?: any } | null>(null);
+  const closeSheet = () => setSheet(null);
 
   useEffect(() => {
     try { setHistory(JSON.parse(localStorage.getItem("onwebs.m.history") || "[]")); } catch {}
     try { const p = JSON.parse(localStorage.getItem("onwebs.m.profile") || "null"); if (p) setProfile(p); } catch {}
   }, []);
 
-  // Every finished analysis lands in local history (device-only storage).
   const saveToHistory = (domain: string, res, pages: number) => {
     const entry = {
       id: Date.now(),
@@ -192,8 +302,6 @@ export default function MobilePage() {
     });
   };
 
-  // Collect raw crawl batches straight off the event bus; the heavy Zustand
-  // store and its table pipelines never load on mobile.
   useEffect(() => {
     let un1, un2;
     listen("crawl_result", (e) => {
@@ -217,7 +325,7 @@ export default function MobilePage() {
     pagesRef.current = [];
     setCount(0);
     setResult(null);
-    setOpenKey(null);
+    setDemoSample(false);
     setPhase("crawling");
 
     // Browser-preview demo only: outside Tauri there is no crawler, so with
@@ -230,7 +338,6 @@ export default function MobilePage() {
       const t = setInterval(() => { n += Math.ceil(Math.random() * 9); setCount(n); }, 120);
       setTimeout(() => {
         clearInterval(t);
-        setCount(137);
         const base = domain.replace(/\/$/, "");
         const mk = (u, status, title, desc, h1, words, ix = 1) => ({
           url: `${base}${u}`,
@@ -238,27 +345,37 @@ export default function MobilePage() {
           headings: { h1: h1 ? [h1] : [] }, word_count: words,
           indexability: { indexability: ix },
         });
+
+        // Seeded from the domain so the sample answers the thing that was
+        // typed. A fixed list returned 96 for every site on earth, which reads
+        // as a broken app rather than a demo.
+        const seed = [...domain].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7);
+        const pick = (min, max, shift) => min + ((seed >>> shift) % (max - min + 1));
+
+        const posts = pick(40, 160, 0);
+        const broken = pick(0, 9, 3);
+        const noDesc = pick(0, 8, 6);
+        const dupTitle = pick(0, 5, 9);
+        const noH1 = pick(0, 4, 12);
+        const thin = pick(0, 6, 15);
+        const hidden = pick(0, 3, 18);
+
         const pages = [
-          ...Array.from({ length: 112 }, (_, i) => mk(`/blog/post-${i}`, 200, `مقاله ${i}`, "توضیح", "عنوان", 700)),
-          mk("/services/old-page", 404, "", "", "", 0),
-          mk("/product/legacy-13", 404, "", "", "", 0),
-          mk("/tag/قدیمی", 404, "", "", "", 0),
-          mk("/wp-content/broken.css", 404, "", "", "", 0),
-          mk("/fa/contact-old", 404, "", "", "", 0),
-          mk("/api/feed", 500, "", "", "", 0),
-          mk("/portfolio/a", 200, "نمونه‌کار", "", "عنوان", 500),
-          mk("/portfolio/b", 200, "نمونه‌کار", "", "عنوان", 480),
-          mk("/portfolio/c", 200, "نمونه‌کار", "", "عنوان", 450),
-          mk("/about", 200, "درباره‌ی ما — آژانس دیجیتال مارکتینگ آن‌وبز و خدمات سئو", "توضیح", "عنوان", 900),
-          mk("/faq", 200, "سوالات متداول", "", "", 380),
-          mk("/landing/off", 200, "لندینگ", "توضیح", "عنوان", 120, 0),
-          mk("/news/1", 200, "خبر اول", "توضیح", "عنوان", 150),
-          mk("/news/2", 200, "خبر دوم", "توضیح", "عنوان", 90),
+          ...Array.from({ length: posts }, (_, i) =>
+            mk(`/blog/post-${i}`, 200, `مقاله ${i}`, "توضیح", "عنوان", 700)),
+          ...Array.from({ length: broken }, (_, i) => mk(`/old/${i}`, i % 3 === 0 ? 500 : 404, "", "", "", 0)),
+          ...Array.from({ length: noDesc }, (_, i) => mk(`/p/${i}`, 200, `صفحه ${i}`, "", "عنوان", 600)),
+          ...Array.from({ length: dupTitle }, (_, i) => mk(`/portfolio/${i}`, 200, "نمونه‌کار", "توضیح", "عنوان", 480)),
+          ...Array.from({ length: noH1 }, (_, i) => mk(`/lp/${i}`, 200, `لندینگ ${i}`, "توضیح", "", 520)),
+          ...Array.from({ length: thin }, (_, i) => mk(`/news/${i}`, 200, `خبر ${i}`, "توضیح", "عنوان", 120)),
+          ...Array.from({ length: hidden }, (_, i) => mk(`/private/${i}`, 200, `داخلی ${i}`, "توضیح", "عنوان", 400, 0)),
         ];
+        setCount(pages.length);
+        setDemoSample(true);
         const res = analyse(pages);
         setResult(res);
         setPhase("done");
-        saveToHistory(domain, res, 137);
+        saveToHistory(domain, res, pages.length);
       }, 2600);
       return;
     }
@@ -285,7 +402,7 @@ export default function MobilePage() {
     setCount(h.pages);
     setUrl(h.domain);
     setPhase("done");
-    setOpenKey(null);
+    closeSheet();
     setTab("search");
   };
 
@@ -297,425 +414,296 @@ export default function MobilePage() {
     });
   };
 
+  const saveProfile = () => {
+    const p = { name: formName.trim(), email: formEmail.trim() };
+    setProfile(p);
+    try { localStorage.setItem("onwebs.m.profile", JSON.stringify(p)); } catch {}
+    closeSheet();
+  };
+
   const g = result ? grade(result.score) : null;
   const R = 52, C = 2 * Math.PI * R;
+  const issue = sheet?.kind === "issue" ? sheet.data : null;
+  const category = sheet?.kind === "category" ? sheet.data : null;
 
   return (
     <div dir="rtl" className="min-h-screen w-full flex flex-col items-center px-5 pb-28"
-      style={{ background: `radial-gradient(80% 50% at 50% 0%, ${ACCENT}18 0%, transparent 60%), ${CANVAS}` }}>
+      style={{ background: INK, color: TEXT }}>
 
-      {tab === "search" && (<>
-      {/* Brand: the site's 3D mark, search right under it */}
-      <div className="flex flex-col items-center mt-8 mb-5">
-        <img src="/logo-3d.png" alt="" className="w-24 h-24"
-          style={{ filter: "drop-shadow(0 10px 22px rgba(30,58,111,0.18))" }} />
-        <div className="flex items-baseline gap-1.5 -mt-1" dir="ltr">
-          <span className="text-xl font-bold" style={{ color: NAVY_DEEP }}>onwebs</span>
-          <span className="text-[10px] font-semibold" style={{ color: ACCENT }}>SEO & GEO</span>
-        </div>
+      {/* Header: mark, then the search field. Nothing here is decorative. */}
+      <header className="w-full max-w-md pt-8 pb-5 flex flex-col items-center">
+        {/* The navy mark recoloured to the one accent this screen uses. Its
+            own shading is preserved so the form does not flatten into a blob. */}
+        <img src="icon-yellow.png" alt="Onwebs" width={54} height={54}
+          style={{ filter: "drop-shadow(0 6px 16px rgba(245,197,24,0.22))" }} />
+        <h1 className="mt-3 text-[15px] font-extrabold tracking-tight">
+          Onwebs <span style={{ color: YELLOW }}>SEO</span>
+        </h1>
+        <p className="text-[11px] mt-1" style={{ color: MUTED }}>
+          آدرس سایتت را بده، وضعیتش را بگویم
+        </p>
+      </header>
+
+      <div className="w-full max-w-md flex items-center gap-2 rounded-full px-4 py-2.5"
+        style={{ background: SURFACE, border: `1px solid ${LINE}` }}>
+        <Icon d={PATHS.search} size={18} />
+        <input
+          dir="ltr" value={url} onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && start()}
+          placeholder="example.com"
+          className="flex-1 bg-transparent outline-none text-[13px] text-left"
+          style={{ color: TEXT }}
+        />
+        <button
+          onClick={start} disabled={!url.trim() || phase === "crawling"}
+          className="rounded-full px-4 py-1.5 text-[12px] font-extrabold disabled:opacity-30 active:scale-95 transition-transform"
+          style={{ background: YELLOW, color: "#0A0A0B" }}
+        >
+          {phase === "crawling" ? "…" : "بررسی"}
+        </button>
       </div>
 
-      {/* Search: compact capsule, same radius language as the nav pill */}
-      <div className="w-full max-w-md">
-        <div className="flex items-center rounded-full bg-white pl-1.5 pr-4 py-1.5"
-          style={{ boxShadow: "0 10px 30px rgba(30,58,111,0.12)" }} dir="ltr">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="shrink-0 ml-1" style={{ color: "#94A3B8" }}>
-            <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.8" />
-            <path d="M16 16l4.2 4.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      {phase === "crawling" && (
+        <p className="mt-4 text-[12px]" style={{ color: MUTED }}>
+          <span style={{ color: YELLOW, fontWeight: 800 }}>{count}</span> صفحه بررسی شد…
+        </p>
+      )}
+
+      {/* Without this, invented numbers sit under the domain someone just
+          typed and read as a verdict on their site. */}
+      {demoSample && phase === "done" && (
+        <div className="w-full max-w-md mt-6 rounded-xl px-3 py-2 text-[11px] leading-5"
+          style={{ background: "rgba(245,197,24,0.10)", border: `1px solid rgba(245,197,24,0.3)`, color: YELLOW }}>
+          نمونه‌ی نمایشی — این اعداد از سایت شما نیست. کراول واقعی فقط در خود
+          اپ انجام می‌شود.
+        </div>
+      )}
+
+      {/* Score. Tapping it explains how it was reached. */}
+      {phase === "done" && result && g && (
+        <button onClick={() => setSheet({ kind: "score" })}
+          className="mt-7 flex flex-col items-center active:opacity-70 transition-opacity">
+          <svg width="140" height="140" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r={R} fill="none" stroke={LINE} strokeWidth="9" />
+            <motion.circle
+              cx="70" cy="70" r={R} fill="none" stroke={g.tone} strokeWidth="9"
+              strokeLinecap="round" transform="rotate(-90 70 70)"
+              // Offset, not dasharray: a two-part dash string is a string to
+              // the animator, and it interpolated to something arbitrary — a
+              // score of 96 drew a 7% arc. One number animates predictably.
+              strokeDasharray={C}
+              initial={{ strokeDashoffset: C }}
+              animate={{ strokeDashoffset: C - (result.score / 100) * C }}
+              transition={{ duration: 0.9, ease: "easeOut" }}
+            />
+            <text x="70" y="66" textAnchor="middle" fontSize="34" fontWeight="800" fill={TEXT}>
+              {result.score}
+            </text>
+            <text x="70" y="88" textAnchor="middle" fontSize="12" fill={MUTED}>از ۱۰۰</text>
           </svg>
-          <input
-            dir="ltr"
-            type="url"
-            inputMode="url"
-            autoCapitalize="none"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && phase !== "crawling" && start()}
-            placeholder="example.com"
-            className="flex-1 min-w-0 px-2.5 py-2 text-[13.5px] outline-none bg-transparent text-left"
-            style={{ color: NAVY_DEEP }}
-          />
-          <button
-            onClick={start}
-            disabled={phase === "crawling" || !url.trim()}
-            className="shrink-0 rounded-full px-4 py-2 font-bold text-white text-xs disabled:opacity-50"
-            style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-            {phase === "crawling" ? "…" : "تحلیل"}
-          </button>
-        </div>
-      </div>
+          <span className="text-[13px] font-extrabold" style={{ color: g.tone }}>{g.label}</span>
+          <span className="text-[11px] mt-1" style={{ color: MUTED }}>
+            {count} صفحه · {result.issues.reduce((a, i) => a + i.count, 0)} مورد · برای جزئیات بزن
+          </span>
+        </button>
+      )}
 
-      {/* Six audit areas, IMDb interests-style grid */}
-      {phase === "idle" && (
-        <div className="w-full max-w-md mt-7">
-          <h2 className="text-[13px] font-extrabold mb-3" style={{ color: NAVY_DEEP }}>
-            چی بررسی می‌شود؟
+      {/* Findings, each one a sheet. */}
+      {phase === "done" && result && (
+        <section className="w-full max-w-md mt-7">
+          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>
+            یافته‌ها
           </h2>
-          <div className="grid grid-cols-2 gap-3">
-            {CATEGORIES.map((cat) => {
-              const open = openCat === cat.key;
-              return (
-                <button key={cat.key}
-                  onClick={() => setOpenCat(open ? null : cat.key)}
-                  className={`text-right rounded-3xl bg-white p-4 transition-all active:scale-[0.98] ${open ? "col-span-2" : ""}`}
-                  style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}>
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
-                      style={{ background: `${cat.tint}14` }}>
-                      {cat.icon(cat.tint)}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-[12.5px] font-bold truncate" style={{ color: NAVY_DEEP }}>
-                        {cat.title}
-                      </span>
-                      <span className="block text-[10.5px] mt-0.5 truncate" style={{ color: "#64748B" }}>
-                        {cat.desc}
-                      </span>
-                    </span>
-                  </div>
-                  {open && (
-                    <p className="text-[11.5px] leading-5 mt-3 pt-3 border-t border-slate-50" style={{ color: "#475569" }}>
-                      {cat.more}
-                    </p>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+          {result.issues.length === 0 && (
+            <p className="text-[12px] py-6 text-center" style={{ color: MUTED }}>
+              چیزی برای گزارش نیست.
+            </p>
+          )}
+          {result.issues.map((it) => (
+            <Row
+              key={it.key}
+              title={it.title}
+              meta={`${SEV[it.severity].label} · ${it.count} صفحه`}
+              onClick={() => setSheet({ kind: "issue", data: it })}
+              right={
+                <span className="text-[12px] font-extrabold tabular-nums shrink-0"
+                  style={{ color: SEV[it.severity].color }}>
+                  {it.count}
+                </span>
+              }
+            />
+          ))}
+        </section>
       )}
 
-      {/* Crawling state */}
-      <AnimatePresence>
-        {phase === "crawling" && (
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            className="flex flex-col items-center mt-12">
-            <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }}
-              className="w-12 h-12 rounded-full mb-5"
-              style={{ border: `3px solid ${ACCENT}30`, borderTopColor: ACCENT }} />
-            <div className="text-3xl font-bold tabular-nums" style={{ color: NAVY_DEEP }}>{count}</div>
-            <div className="text-xs mt-1" style={{ color: "#64748B" }}>صفحه کراول شد…</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* The six areas. Always available — this is what the app checks. */}
+      {tab === "search" && phase !== "crawling" && (
+        <section className="w-full max-w-md mt-8">
+          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>
+            چه چیزهایی بررسی می‌شود
+          </h2>
+          {CATEGORIES.map((c) => (
+            <Row key={c.key} icon={PATHS[c.key]} title={c.title} meta={c.desc}
+              onClick={() => setSheet({ kind: "category", data: c })} />
+          ))}
+        </section>
+      )}
 
-      {/* Result */}
-      <AnimatePresence>
-        {phase === "done" && result && (
-          <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-md mt-10">
-
-            {/* Score ring */}
-            <div className="flex flex-col items-center rounded-3xl bg-white py-8 px-6"
-              style={{ boxShadow: "0 16px 40px rgba(30,58,111,0.10)" }}>
-              <div className="relative w-[128px] h-[128px]">
-                <svg width="128" height="128" viewBox="0 0 128 128" className="-rotate-90">
-                  <circle cx="64" cy="64" r={R} fill="none" stroke="#E2E8F0" strokeWidth="10" />
-                  <motion.circle cx="64" cy="64" r={R} fill="none"
-                    stroke={g.color} strokeWidth="10" strokeLinecap="round"
-                    strokeDasharray={C}
-                    initial={{ strokeDashoffset: C }}
-                    animate={{ strokeDashoffset: C * (1 - result.score / 100) }}
-                    transition={{ duration: 1.1, ease: "easeOut" }} />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-4xl font-extrabold tabular-nums" style={{ color: NAVY_DEEP }}>
-                    {result.score}
-                  </span>
-                  <span className="text-[11px] font-bold" style={{ color: g.color }}>{g.label}</span>
-                </div>
-              </div>
-              <div className="text-xs mt-4" style={{ color: "#64748B" }}>
-                نمره‌ی سئو از ۱۰۰ · {count} صفحه بررسی شد
-              </div>
-            </div>
-
-            {/* Issues */}
-            <div className="mt-6 space-y-3">
-              {result.issues.length === 0 && (
-                <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold"
-                  style={{ color: "#16A34A", boxShadow: "0 8px 24px rgba(30,58,111,0.08)" }}>
-                  🎉 مشکلی پیدا نشد — سایتت تمیز است
-                </div>
-              )}
-              {result.issues.map((issue, i) => {
-                const sv = SEV[issue.severity];
-                const open = openKey === issue.key;
-                return (
-                  <motion.div key={issue.key}
-                    initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.15 + i * 0.05 }}
-                    className="rounded-2xl bg-white overflow-hidden"
-                    style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}>
-
-                    {/* Card header — tap to expand */}
-                    <button
-                      onClick={() => setOpenKey(open ? null : issue.key)}
-                      className="w-full text-right p-4 active:bg-slate-50">
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-2 min-w-0">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                            className={`shrink-0 transition-transform duration-200 ${open ? "rotate-90" : ""}`}
-                            style={{ color: "#94A3B8" }}>
-                            <path d="M9 6l-6 6 6 6" stroke="currentColor" strokeWidth="2.4"
-                              strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                          <span className="text-[13px] font-bold truncate" style={{ color: NAVY_DEEP }}>
-                            {issue.title}
-                          </span>
-                        </span>
-                        <span className="flex items-center gap-2 shrink-0 mr-2">
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                            style={{ background: sv.bg, color: sv.fg }}>{sv.label}</span>
-                          <span className="text-sm font-extrabold tabular-nums" style={{ color: sv.fg }}>
-                            {issue.count.toLocaleString("fa-IR")}
-                          </span>
-                        </span>
-                      </div>
-                    </button>
-
-                    {/* Expanded body: why + fix + affected URLs */}
-                    <AnimatePresence initial={false}>
-                      {open && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: "easeOut" }}>
-                          <div className="px-4 pb-4 space-y-3">
-                            <div className="rounded-xl p-3" style={{ background: "#F8FAFC" }}>
-                              <div className="text-[11px] font-bold mb-1" style={{ color: sv.fg }}>
-                                چه مشکلی ایجاد می‌کند؟
-                              </div>
-                              <p className="text-[11.5px] leading-5" style={{ color: "#475569" }}>
-                                {issue.why}
-                              </p>
-                            </div>
-                            <div className="rounded-xl p-3" style={{ background: "#F0FDF4" }}>
-                              <div className="text-[11px] font-bold mb-1" style={{ color: "#16A34A" }}>
-                                راه‌حل
-                              </div>
-                              <p className="text-[11.5px] leading-5" style={{ color: "#475569" }}>
-                                {issue.fix}
-                              </p>
-                            </div>
-                            {issue.urls.length > 0 && (
-                              <div>
-                                <div className="text-[11px] font-bold mb-1.5" style={{ color: NAVY_DEEP }}>
-                                  آدرس‌های درگیر
-                                  {issue.count > issue.urls.length &&
-                                    ` (${issue.urls.length.toLocaleString("fa-IR")} از ${issue.count.toLocaleString("fa-IR")})`}
-                                </div>
-                                <div dir="ltr"
-                                  className="rounded-xl border border-slate-100 divide-y divide-slate-50 max-h-52 overflow-y-auto">
-                                  {issue.urls.map((u) => (
-                                    <div key={u}
-                                      onClick={() => navigator.clipboard?.writeText(u)}
-                                      className="px-3 py-2 text-[10.5px] font-mono truncate text-left active:bg-slate-50"
-                                      style={{ color: ACCENT }}
-                                      title="لمس کن تا کپی شود">
-                                      {u}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </motion.div>
-                );
-              })}
-            </div>
-
-            <button onClick={() => { setPhase("idle"); setResult(null); setUrl(""); setOpenKey(null); }}
-              className="w-full mt-6 py-3.5 rounded-full text-sm font-bold text-white"
-              style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-              تحلیل سایت دیگر
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      </>)}
-
-      {/* ------------------------- HISTORY TAB ------------------------- */}
       {tab === "history" && (
-        <div className="w-full max-w-md mt-12">
-          <h1 className="text-lg font-extrabold mb-1" style={{ color: NAVY_DEEP }}>تاریخچه</h1>
-          <p className="text-[11px] mb-5" style={{ color: "#64748B" }}>
-            تحلیل‌های قبلی — فقط روی همین دستگاه ذخیره می‌شوند
-          </p>
-
+        <section className="w-full max-w-md mt-6">
+          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>تاریخچه</h2>
           {history.length === 0 && (
-            <div className="flex flex-col items-center rounded-3xl bg-white py-12 px-6 text-center"
-              style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style={{ color: "#CBD5E1" }}>
-                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" />
-                <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-              <p className="text-sm font-bold mt-4" style={{ color: NAVY_DEEP }}>هنوز تحلیلی نداری</p>
-              <p className="text-[11px] mt-1" style={{ color: "#64748B" }}>
-                از تب جستجو اولین سایتت را تحلیل کن
-              </p>
-              <button onClick={() => setTab("search")}
-                className="mt-5 px-6 py-2.5 rounded-full text-xs font-bold text-white"
-                style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-                برو به جستجو
-              </button>
-            </div>
+            <p className="text-[12px] py-10 text-center" style={{ color: MUTED }}>
+              هنوز سایتی بررسی نکرده‌ای.
+            </p>
           )}
-
-          <div className="space-y-3">
-            {history.map((h) => {
-              const hg = grade(h.score);
-              return (
-                <div key={h.id} className="rounded-2xl bg-white p-4 flex items-center gap-3 active:bg-slate-50"
-                  style={{ boxShadow: "0 8px 24px rgba(30,58,111,0.07)" }}
-                  onClick={() => openHistoryEntry(h)}>
-                  <div className="w-11 h-11 rounded-full flex items-center justify-center shrink-0"
-                    style={{ background: `${hg.color}1A` }}>
-                    <span className="text-sm font-extrabold tabular-nums" style={{ color: hg.color }}>
-                      {h.score}
-                    </span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-bold truncate text-left" dir="ltr" style={{ color: NAVY_DEEP }}>
-                      {h.domain}
-                    </div>
-                    <div className="text-[10.5px] mt-0.5" style={{ color: "#64748B" }}>
-                      {new Date(h.date).toLocaleDateString("fa-IR")} · {Number(h.pages).toLocaleString("fa-IR")} صفحه · {Number(h.issueCount).toLocaleString("fa-IR")} مشکل
-                    </div>
-                  </div>
-                  <button onClick={(e) => { e.stopPropagation(); deleteHistoryEntry(h.id); }}
-                    className="p-2 shrink-0 active:opacity-60" aria-label="حذف">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ color: "#CBD5E1" }}>
-                      <path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m1 0l-.7 12a2 2 0 01-2 1.9H8.7a2 2 0 01-2-1.9L6 7"
-                        stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+          {history.map((h) => (
+            <Row key={h.id} title={h.domain}
+              meta={`${new Date(h.date).toLocaleDateString("fa-IR")} · ${h.pages} صفحه`}
+              onClick={() => setSheet({ kind: "historyEntry", data: h })}
+              right={
+                <span className="text-[12px] font-extrabold tabular-nums shrink-0"
+                  style={{ color: grade(h.score).tone }}>{h.score}</span>
+              }
+            />
+          ))}
+        </section>
       )}
 
-      {/* ------------------------- PROFILE TAB ------------------------- */}
       {tab === "profile" && (
-        <div className="w-full max-w-md mt-12">
-          {!profile ? (
-            <div className="rounded-3xl bg-white p-6" style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
-              <div className="flex flex-col items-center mb-6">
-                <div className="w-16 h-16 rounded-full flex items-center justify-center mb-3"
-                  style={{ background: `${ACCENT}14` }}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ color: ACCENT }}>
-                    <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.8" />
-                    <path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  </svg>
-                </div>
-                <h1 className="text-lg font-extrabold" style={{ color: NAVY_DEEP }}>ورود به Onwebs</h1>
-                <p className="text-[11px] mt-1 text-center leading-5" style={{ color: "#64748B" }}>
-                  اطلاعات فقط روی همین دستگاه ذخیره می‌شود — نه سروری، نه رمزی
-                </p>
-              </div>
-              <div className="space-y-3">
-                <input value={formName} onChange={(e) => setFormName(e.target.value)}
-                  placeholder="نام"
-                  className="w-full px-5 py-3.5 rounded-full text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white"
-                  style={{ color: NAVY_DEEP }} />
-                <input value={formEmail} onChange={(e) => setFormEmail(e.target.value)}
-                  placeholder="ایمیل" dir="ltr" inputMode="email" autoCapitalize="none"
-                  className="w-full px-5 py-3.5 rounded-full text-[13px] outline-none border border-slate-200 focus:border-blue-300 bg-white text-left"
-                  style={{ color: NAVY_DEEP }} />
-                <button
-                  disabled={!formName.trim()}
-                  onClick={() => {
-                    const p = { name: formName.trim(), email: formEmail.trim() };
-                    setProfile(p);
-                    try { localStorage.setItem("onwebs.m.profile", JSON.stringify(p)); } catch {}
-                  }}
-                  className="w-full py-3.5 rounded-full text-sm font-bold text-white disabled:opacity-50"
-                  style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-                  ورود
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="rounded-3xl bg-white p-6 flex items-center gap-4"
-                style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
-                <div className="w-14 h-14 rounded-full flex items-center justify-center shrink-0 text-white text-xl font-extrabold"
-                  style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)` }}>
-                  {profile.name.slice(0, 1)}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-[15px] font-extrabold truncate" style={{ color: NAVY_DEEP }}>{profile.name}</div>
-                  {profile.email && (
-                    <div className="text-[11px] truncate text-left" dir="ltr" style={{ color: "#64748B" }}>{profile.email}</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-3xl bg-white divide-y divide-slate-50 overflow-hidden"
-                style={{ boxShadow: "0 12px 32px rgba(30,58,111,0.08)" }}>
-                {[
-                  { label: "وب‌سایت Onwebs", value: "seo.onwebs.ir", href: "https://seo.onwebs.ir" },
-                  { label: "سورس‌کد پروژه", value: "GitHub", href: "https://github.com/AmirMoghtader/onwebs-seo-geo" },
-                  { label: "نسخه‌ی اپ", value: "0.1.0" },
-                ].map((row) => (
-                  <div key={row.label}
-                    onClick={() => row.href && window.open(row.href, "_blank")}
-                    className={`flex items-center justify-between px-5 py-4 ${row.href ? "active:bg-slate-50" : ""}`}>
-                    <span className="text-[12.5px] font-bold" style={{ color: NAVY_DEEP }}>{row.label}</span>
-                    <span className="text-[11.5px]" dir="ltr" style={{ color: row.href ? ACCENT : "#94A3B8" }}>{row.value}</span>
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={() => { setProfile(null); setFormName(""); setFormEmail(""); try { localStorage.removeItem("onwebs.m.profile"); } catch {} }}
-                className="w-full py-3.5 rounded-full text-sm font-bold border"
-                style={{ color: "#DC2626", borderColor: "#FECACA", background: "white" }}>
-                خروج از حساب
-              </button>
-            </div>
-          )}
-        </div>
+        <section className="w-full max-w-md mt-6">
+          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>حساب</h2>
+          <Row icon={PATHS.profile} title={profile?.name || "تنظیم پروفایل"}
+            meta={profile?.email || "نام و ایمیل روی همین دستگاه ذخیره می‌شود"}
+            onClick={() => {
+              setFormName(profile?.name || "");
+              setFormEmail(profile?.email || "");
+              setSheet({ kind: "profile" });
+            }} />
+          <Row icon={PATHS.history} title="پاک کردن تاریخچه"
+            meta={`${history.length} مورد ذخیره شده`}
+            onClick={() => setSheet({ kind: "clear" })} />
+        </section>
       )}
 
-      {/* IMDb-style floating pill tab bar: detached capsule, icons only,
-          the active tab gets a soft grey highlight behind it. */}
+      {/* ── Sheets ─────────────────────────────────────────────────────── */}
+
+      <Sheet open={sheet?.kind === "issue"} onClose={closeSheet}
+        title={issue?.title || ""}
+        subtitle={issue ? `${SEV[issue.severity].label} · ${issue.count} صفحه` : ""}>
+        {issue && (
+          <>
+            <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>{issue.why}</p>
+            <h3 className="text-[12px] font-extrabold mb-1" style={{ color: YELLOW }}>راه حل</h3>
+            <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>{issue.fix}</p>
+            {issue.urls.length > 0 && (
+              <>
+                <h3 className="text-[12px] font-extrabold mb-2" style={{ color: MUTED }}>
+                  آدرس‌های درگیر{issue.count > issue.urls.length ? ` (${issue.urls.length} از ${issue.count})` : ""}
+                </h3>
+                <div className="rounded-xl overflow-hidden" style={{ background: RAISED }}>
+                  {issue.urls.map((u) => (
+                    <p key={u} dir="ltr"
+                      className="text-[11px] px-3 py-2 text-left break-all"
+                      style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}>{u}</p>
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </Sheet>
+
+      <Sheet open={sheet?.kind === "category"} onClose={closeSheet}
+        title={category?.title || ""} subtitle={category?.desc || ""}>
+        {category && (
+          <>
+            <div className="mb-4"><Icon d={PATHS[category.key]} size={30} /></div>
+            <p className="text-[12px] leading-6" style={{ color: "#C9C9CF" }}>{category.more}</p>
+          </>
+        )}
+      </Sheet>
+
+      <Sheet open={sheet?.kind === "score"} onClose={closeSheet}
+        title="این عدد از کجا آمد؟"
+        subtitle={result ? `${count} صفحه بررسی شد` : ""}>
+        <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>
+          از ۱۰۰ شروع می‌شود و هر ایراد به نسبت تعداد صفحه‌های درگیرش کم می‌کند، نه
+          به تعداد خودش. برای همین یک سایت ۱۰ صفحه‌ای و یک سایت ۱۰ هزار صفحه‌ای با
+          یک معیار سنجیده می‌شوند.
+        </p>
+        {result?.issues.map((it) => (
+          <div key={it.key} className="flex items-center justify-between py-2"
+            style={{ borderBottom: `1px solid ${LINE}` }}>
+            <span className="text-[12px]" style={{ color: TEXT }}>{it.title}</span>
+            <span className="text-[11px] tabular-nums" style={{ color: SEV[it.severity].color }}>
+              {it.count} صفحه
+            </span>
+          </div>
+        ))}
+      </Sheet>
+
+      <Sheet open={sheet?.kind === "historyEntry"} onClose={closeSheet}
+        title={sheet?.data?.domain || ""}
+        subtitle={sheet?.data ? `${sheet.data.pages} صفحه · امتیاز ${sheet.data.score}` : ""}>
+        <button onClick={() => openHistoryEntry(sheet.data)}
+          className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
+          style={{ background: YELLOW, color: "#0A0A0B" }}>
+          باز کردن این گزارش
+        </button>
+        <button
+          onClick={() => { deleteHistoryEntry(sheet.data.id); closeSheet(); }}
+          className="w-full rounded-xl py-3 text-[13px] font-bold flex items-center justify-center gap-2"
+          style={{ background: RAISED, color: "#F87171" }}>
+          <Icon d={PATHS.trash} size={16} color="#F87171" /> حذف
+        </button>
+      </Sheet>
+
+      <Sheet open={sheet?.kind === "profile"} onClose={closeSheet}
+        title="پروفایل" subtitle="فقط روی همین دستگاه ذخیره می‌شود">
+        <input value={formName} onChange={(e) => setFormName(e.target.value)}
+          placeholder="نام"
+          className="w-full rounded-xl px-3 py-2.5 text-[13px] mb-2 outline-none"
+          style={{ background: RAISED, color: TEXT, border: `1px solid ${LINE}` }} />
+        <input dir="ltr" value={formEmail} onChange={(e) => setFormEmail(e.target.value)}
+          placeholder="email@example.com"
+          className="w-full rounded-xl px-3 py-2.5 text-[13px] mb-3 outline-none text-left"
+          style={{ background: RAISED, color: TEXT, border: `1px solid ${LINE}` }} />
+        <button onClick={saveProfile}
+          className="w-full rounded-xl py-3 text-[13px] font-extrabold active:scale-[0.98] transition-transform"
+          style={{ background: YELLOW, color: "#0A0A0B" }}>ذخیره</button>
+      </Sheet>
+
+      <Sheet open={sheet?.kind === "clear"} onClose={closeSheet}
+        title="پاک کردن تاریخچه" subtitle="این کار برگشت‌پذیر نیست">
+        <button
+          onClick={() => {
+            setHistory([]);
+            try { localStorage.removeItem("onwebs.m.history"); } catch {}
+            closeSheet();
+          }}
+          className="w-full rounded-xl py-3 text-[13px] font-extrabold"
+          style={{ background: "#F87171", color: "#0A0A0B" }}>
+          پاک کن
+        </button>
+      </Sheet>
+
+      {/* Icon-only pill, the shape this app had before: wide targets, no
+          labels, and the active one filled rather than tinted. */}
       <nav dir="ltr"
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full px-3 py-2"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-2 rounded-full px-3 py-2"
         style={{
-          background: "rgba(255,255,255,0.96)",
+          background: "rgba(20,20,22,0.94)",
+          border: `1px solid ${LINE}`,
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          boxShadow: "0 12px 38px rgba(22,41,79,0.20), 0 2px 8px rgba(22,41,79,0.08)",
+          boxShadow: "0 12px 38px rgba(0,0,0,0.55)",
           marginBottom: "env(safe-area-inset-bottom)",
         }}>
         {[
-          { key: "profile", label: "ورود", icon: (c, w) => (
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
-              <circle cx="12" cy="12" r="9.2" stroke="currentColor" strokeWidth={w} />
-              <circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth={w} />
-              <path d="M6.8 18.6c1.2-2.3 3-3.4 5.2-3.4s4 1.1 5.2 3.4" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
-            </svg>
-          )},
-          { key: "search", label: "جستجو", icon: (c, w) => (
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
-              <circle cx="11" cy="11" r="6.8" stroke="currentColor" strokeWidth={w} />
-              <circle cx="11" cy="11" r="2" fill="currentColor" />
-              <path d="M16.2 16.2l4.3 4.3" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
-            </svg>
-          )},
-          { key: "history", label: "تاریخچه", icon: (c, w) => (
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: c }}>
-              <circle cx="12" cy="12" r="8.6" stroke="currentColor" strokeWidth={w} />
-              <path d="M12 7.4V12l3.4 2.1" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
-            </svg>
-          )},
+          { key: "profile", label: "ورود", d: PATHS.profile },
+          { key: "search", label: "جستجو", d: PATHS.search },
+          { key: "history", label: "تاریخچه", d: PATHS.history },
         ].map((t) => {
           const active = tab === t.key;
           return (
@@ -723,12 +711,10 @@ export default function MobilePage() {
               className="flex items-center justify-center rounded-full active:opacity-70 transition-all"
               style={{
                 width: 78, height: 52,
-                background: active
-                  ? `linear-gradient(135deg, ${NAVY} 0%, ${ACCENT} 100%)`
-                  : "transparent",
-                boxShadow: active ? "0 6px 16px rgba(43,108,196,0.35)" : "none",
+                background: active ? YELLOW : "transparent",
+                boxShadow: active ? "0 6px 16px rgba(245,197,24,0.28)" : "none",
               }}>
-              {t.icon(active ? "#FFFFFF" : "#5A6B85", active ? 2 : 1.8)}
+              <Icon d={t.d} size={26} color={active ? INK : MUTED} />
             </button>
           );
         })}

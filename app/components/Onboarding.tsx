@@ -69,6 +69,64 @@ const steps = [
       "Extend Onwebs SEO & GEO\'s capabilities by integrating with your favorite tools — PageSpeed Insights, Google Search Console, Google Analytics, Microsoft Clarity, Power BI, and more.",
     icon: PlugZap,
     imageSrc: "integrations.png",
+    // Each connector needs a key the user has to go and fetch. Saying so here,
+    // with the actual steps, beats a settings screen with an empty box and no
+    // clue where the value comes from.
+    guides: [
+      {
+        name: "Open PageRank — امتیاز اعتبار دامنه",
+        // The one that ships with a working default, which is exactly why it
+        // needs explaining: the shared key runs out.
+        note:
+          "این یکی از ابتدا کار می‌کند، ولی با کلیدی مشترک که سهمیه‌اش بین همهٔ کاربران تقسیم می‌شود. کلید خودت را بگیر تا سهمیهٔ اختصاصی داشته باشی.",
+        steps: [
+          "به openpagerank.keywordseverywhere.com برو",
+          "با حساب Keywords Everywhere وارد شو (ساختنش رایگان است و کارت بانکی نمی‌خواهد)",
+          "در داشبورد، یک OPR API Key بساز و کپی کن",
+          "در Onwebs: تنظیمات ← کانکتورها ← Open PageRank و کلید را جای‌گذاری کن",
+        ],
+        limit: "رایگان: ۳۰٬۰۰۰ دامنه در ماه",
+      },
+      {
+        name: "Google Search Console — کلیک، ایمپرشن و رتبه",
+        steps: [
+          "به console.cloud.google.com برو و یک پروژه بساز",
+          "در APIs & Services ← Library، سرویس «Search Console API» را Enable کن",
+          "در Credentials یک OAuth Client ID از نوع Desktop app بساز",
+          "فایل JSON را دانلود کن و در Onwebs از تنظیمات ← کانکتورها ← Search Console واردش کن",
+          "دکمهٔ اتصال را بزن و در مرورگر به سایتی که در Search Console تأیید کرده‌ای دسترسی بده",
+        ],
+        limit: "رایگان — فقط برای سایت‌هایی که مالکیتشان را تأیید کرده‌ای",
+      },
+      {
+        name: "Google Analytics — ترافیک ارگانیک",
+        steps: [
+          "در همان پروژهٔ Google Cloud، سرویس «Google Analytics Data API» را Enable کن",
+          "همان OAuth Client ID مرحلهٔ قبل قابل استفاده است",
+          "شناسهٔ Property را از Analytics ← Admin ← Property Settings بردار (عددی است، نه G-)",
+          "در Onwebs: تنظیمات ← کانکتورها ← Analytics و شناسه را وارد کن",
+        ],
+        limit: "رایگان",
+      },
+      {
+        name: "PageSpeed Insights — Core Web Vitals",
+        steps: [
+          "در همان پروژهٔ Google Cloud، سرویس «PageSpeed Insights API» را Enable کن",
+          "در Credentials یک API Key بساز",
+          "در Onwebs: تنظیمات ← کانکتورها ← PageSpeed و کلید را وارد کن",
+        ],
+        limit: "بدون کلید ~۱ درخواست در ثانیه؛ با کلید ۲۵٬۰۰۰ در روز",
+      },
+      {
+        name: "Microsoft Clarity — رفتار کاربر",
+        steps: [
+          "به clarity.microsoft.com برو و پروژه‌ات را باز کن",
+          "Settings ← Data Export ← Generate new API token",
+          "توکن را در Onwebs: تنظیمات ← کانکتورها ← Clarity وارد کن",
+        ],
+        limit: "رایگان — ۱۰ درخواست در روز",
+      },
+    ],
   },
   {
     id: 6,
@@ -211,6 +269,39 @@ export default function Onboarding({ onComplete }) {
                           <p className="text-gray-600 mb-4">
                             {steps[currentStep - 1]?.description}
                           </p>
+
+                          {/* Connector setup, spelled out. A key box with no
+                              instructions is where onboarding usually dies. */}
+                          {steps[currentStep - 1]?.guides && (
+                            <div
+                              dir="rtl"
+                              className="w-full text-right space-y-3 max-h-[320px] overflow-y-auto pr-1 mb-4"
+                            >
+                              {steps[currentStep - 1].guides.map((guide) => (
+                                <details
+                                  key={guide.name}
+                                  className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2"
+                                >
+                                  <summary className="cursor-pointer text-sm font-bold dark:text-white list-none flex items-center justify-between gap-2">
+                                    <span>{guide.name}</span>
+                                    <span className="text-[10px] font-normal text-gray-500 shrink-0">
+                                      {guide.limit}
+                                    </span>
+                                  </summary>
+                                  {guide.note && (
+                                    <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-400">
+                                      {guide.note}
+                                    </p>
+                                  )}
+                                  <ol className="mt-2 space-y-1 text-[11px] text-gray-600 dark:text-white/70 list-decimal pr-4">
+                                    {guide.steps.map((line) => (
+                                      <li key={line}>{line}</li>
+                                    ))}
+                                  </ol>
+                                </details>
+                              ))}
+                            </div>
+                          )}
                           <section className="w-full flex items-center">
                             <p className="text-sm text-gray-500">
                               {currentStep === 1
