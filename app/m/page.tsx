@@ -275,10 +275,29 @@ export default function MobilePage() {
   const [formEmail, setFormEmail] = useState("");
   /** True when the numbers on screen are the browser sample, not a crawl. */
   const [demoSample, setDemoSample] = useState(false);
+  /** Why the last crawl could not start, shown instead of failing silently. */
+  const [failure, setFailure] = useState<string | null>(null);
 
   // The single source of what is on screen above the page: { kind, data }.
   const [sheet, setSheet] = useState<{ kind: string; data?: any } | null>(null);
   const closeSheet = () => setSheet(null);
+
+  // Android's WebView applies algorithmic darkening to any page that has not
+  // declared it handles its own theme. Ours is already dark, so that pass
+  // inverted it and served a light screen with white text on it — unreadable.
+  // Painting the document itself also stops the shell's light background from
+  // showing through anywhere the page does not reach.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.colorScheme = "dark";
+    root.style.background = INK;
+    document.body.style.background = INK;
+    return () => {
+      root.style.colorScheme = "";
+      root.style.background = "";
+      document.body.style.background = "";
+    };
+  }, []);
 
   useEffect(() => {
     try { setHistory(JSON.parse(localStorage.getItem("onwebs.m.history") || "[]")); } catch {}
@@ -326,6 +345,7 @@ export default function MobilePage() {
     setCount(0);
     setResult(null);
     setDemoSample(false);
+    setFailure(null);
     setPhase("crawling");
 
     // Browser-preview demo only: outside Tauri there is no crawler, so with
@@ -389,11 +409,20 @@ export default function MobilePage() {
         setPhase("done");
         saveToHistory(domain, res, pagesRef.current.length);
       }
-    } catch {
-      const res = analyse(pagesRef.current);
-      setResult(res);
-      setPhase(pagesRef.current.length ? "done" : "idle");
-      if (pagesRef.current.length) saveToHistory(domain, res, pagesRef.current.length);
+    } catch (error) {
+      // This used to swallow the error and drop back to idle, so a crawl that
+      // could not start looked exactly like a button that does nothing. On a
+      // phone there is no console to check, so the reason has to reach the
+      // screen or it does not exist.
+      if (pagesRef.current.length) {
+        const res = analyse(pagesRef.current);
+        setResult(res);
+        setPhase("done");
+        saveToHistory(domain, res, pagesRef.current.length);
+      } else {
+        setFailure(String(error?.message || error || "خطای ناشناخته"));
+        setPhase("idle");
+      }
     }
   };
 
@@ -462,6 +491,14 @@ export default function MobilePage() {
           {phase === "crawling" ? "…" : "بررسی"}
         </button>
       </div>
+
+      {failure && (
+        <div className="w-full max-w-md mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5"
+          style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.35)", color: "#FCA5A5" }}>
+          <span className="font-bold">کراول شروع نشد.</span>
+          <span dir="ltr" className="block mt-1 opacity-80 break-all text-left">{failure}</span>
+        </div>
+      )}
 
       {phase === "crawling" && (
         <p className="mt-4 text-[12px]" style={{ color: MUTED }}>

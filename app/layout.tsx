@@ -77,12 +77,23 @@ export default function RootLayout({
       // would force a horizontal scrollbar, and the page must scroll
       // vertically instead of being clipped.
       className={isMobileShell ? "" : "min-w-[600px]"}
+      // Declared before any script runs. Without it Android's WebView treats
+      // the phone page as a light page it should darken, and inverts a design
+      // that was already dark.
+      style={isMobileShell ? { colorScheme: "dark", background: "#0A0A0B" } : undefined}
       suppressHydrationWarning
     >
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        {isMobileShell && <meta name="color-scheme" content="dark" />}
+      </head>
       <body
-        className={`relative rounded-md bg-gray-100 dark:bg-brand-darker/95 font-sans ${
-          isMobileShell ? "overflow-y-auto overflow-x-hidden" : "overflow-hidden"
+        className={`relative rounded-md font-sans ${
+          isMobileShell
+            ? "overflow-y-auto overflow-x-hidden"
+            : "bg-gray-100 dark:bg-brand-darker/95 overflow-hidden"
         }`}
+        style={isMobileShell ? { background: "#0A0A0B" } : undefined}
         suppressHydrationWarning
       >
         <MantineProvider

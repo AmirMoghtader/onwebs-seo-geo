@@ -22,7 +22,12 @@ android {
     compileSdk = 36
     namespace = "com.onwebs.seogeo"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // A crawler exists to fetch whatever URL it is pointed at, and a great
+        // many of the sites it audits are still served over plain HTTP —
+        // including the dead subdomains it is supposed to *report* as findings.
+        // With this false, Android refuses those requests before they leave the
+        // phone and every one of them looks like a crawl failure.
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.onwebs.seogeo"
         minSdk = 24
         targetSdk = 36
