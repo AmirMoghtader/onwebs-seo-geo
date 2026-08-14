@@ -26,6 +26,28 @@ MASTER = "/Users/amir/Desktop/projects/onwebs 3d -v3/assets-src/originals/assets
 ICONS = os.path.join(REPO, "src-tauri", "icons")
 
 WHITE = (255, 255, 255, 255)
+YELLOW = (245, 197, 24)
+
+
+def recolour(mark: Image.Image, rgb) -> Image.Image:
+    """The mark in another colour, keeping its own shading.
+
+    Flat-filling every opaque pixel would turn the 3D mark into a silhouette,
+    so each pixel's luminance is carried across as a shade of the new colour.
+    """
+    r, g, b, a = mark.split()
+    lum = Image.merge("RGB", (r, g, b)).convert("L")
+    out = Image.new("RGBA", mark.size)
+    px_l, px_a, px_o = lum.load(), a.load(), out.load()
+    for y in range(mark.height):
+        for x in range(mark.width):
+            alpha = px_a[x, y]
+            if alpha == 0:
+                px_o[x, y] = (0, 0, 0, 0)
+                continue
+            k = 0.72 + 0.28 * (px_l[x, y] / 255)
+            px_o[x, y] = (int(rgb[0] * k), int(rgb[1] * k), int(rgb[2] * k), alpha)
+    return out
 
 # How much of each canvas the mark fills. The master art is already trimmed to
 # its own edges, so these are effectively full-bleed: square tiles keep only a
@@ -38,7 +60,10 @@ FILL_SQUARE = 0.88
 # launcher cropped them, which is what made the icon look broken next to
 # every other app on the home screen. 0.58 keeps it clear of the mask with
 # a little room for the more aggressive masks some launchers use.
-FILL_ADAPTIVE = 0.58
+FILL_ADAPTIVE = 0.46
+# Android draws the legacy icon inside its own mask too, so the mark needs the
+# same restraint there as in the adaptive foreground.
+FILL_ANDROID_LEGACY = 0.60
 FILL_IOS = 0.84
 
 
@@ -175,11 +200,15 @@ ADAPTIVE_SCALE = 432 / 192
 
 
 def build_android(mark: Image.Image, root: str) -> list[str]:
+    # The phone app is yellow on near-black, and a navy launcher icon belonged
+    # to a different product. White stays as the tile so the mark reads at the
+    # small sizes a home screen actually uses.
+    mark = recolour(mark, YELLOW)
     written = []
     for density, size in ANDROID_DENSITIES.items():
         base = os.path.join(root, density)
-        write(tile(mark, size, FILL_SQUARE), os.path.join(base, "ic_launcher.png"))
-        write(tile(mark, size, FILL_SQUARE, circle=True),
+        write(tile(mark, size, FILL_ANDROID_LEGACY), os.path.join(base, "ic_launcher.png"))
+        write(tile(mark, size, FILL_ANDROID_LEGACY, circle=True),
               os.path.join(base, "ic_launcher_round.png"))
         write(tile(mark, int(round(size * ADAPTIVE_SCALE)), FILL_ADAPTIVE, background=None),
               os.path.join(base, "ic_launcher_foreground.png"))
