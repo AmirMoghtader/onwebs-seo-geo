@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.1"
+version = "0.1.2"
 description = "Onwebs SEO & GEO — desktop SEO crawler and GEO/AI-search toolkit"
 authors = ["Onwebs"]
 license = ""

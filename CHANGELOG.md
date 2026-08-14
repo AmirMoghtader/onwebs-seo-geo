@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.2 — 2026-08-14
+
+### Phone app, rebuilt
+- Dark throughout, with a single yellow accent. Icons are drawn on the
+  background instead of inside six differently tinted tiles — on a screen this
+  dark, one accent is what keeps it readable
+- Everything that responds to a tap opens a sheet from the bottom. One `Sheet`
+  renders them all, so the motion, the grabber and the drag-to-dismiss cannot
+  drift apart between panels
+- The browser preview answered `96` for every domain on earth from a fixed
+  sample list. It now seeds the sample from the domain, and says plainly that
+  the figures are a sample: invented numbers sitting under the address someone
+  just typed read as a verdict on their own site
+
+### Failed URLs are now something you can act on
+- The failure count in the status bar is a control: tapping it narrows the
+  table to exactly those URLs
+- Rows select the way a file list selects — click, Cmd-click for one more,
+  Shift-click for a run — and the right-click menu retries the selection
+- A retry re-requests only the URLs that never produced a response, and
+  replaces their rows in place rather than clearing the crawl
+
+### Also
+- Response bodies are retried on a truncated read. The request had retries and
+  the body read had none, so a connection closed mid-response burned the URL
+  permanently — every one of 27 failures in an 810-page crawl was that
+- PageRank returns as a connector, with the key in Settings rather than
+  compiled into the binary
+- `rand` is pinned. It was declared as `"*"`, and a routine re-resolve picked
+  a version without the function the crawler calls, which only surfaced on a
+  clean CI build
+
+
 ## 0.1.1 — 2026-08-14
 
 Reliability release. A crawl of a slow Persian host (838 URLs) went from dying
