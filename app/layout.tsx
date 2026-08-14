@@ -30,11 +30,15 @@ export default function RootLayout({
   const [isDarkMode, setIsDarkMode] = useState(false);
   const pathname = usePathname();
   // The Android build ships the same frontend; its whole UI is the /m page.
-  const isMobileShell = pathname === "/m";
+  // `output: "export"` writes that route as the file `m.html`, and the Android
+  // asset protocol serves files, not routes — asking it for `/m` found nothing
+  // and left the phone sitting in the desktop shell, which then failed on the
+  // first desktop-only command it invoked.
+  const isMobileShell = pathname === "/m" || pathname === "/m.html";
 
   useEffect(() => {
     if (!isMobileShell && /Android/i.test(navigator.userAgent)) {
-      window.location.replace("/m");
+      window.location.replace("m.html");
     }
   }, [isMobileShell]);
 

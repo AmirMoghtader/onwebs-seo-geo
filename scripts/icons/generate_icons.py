@@ -33,7 +33,12 @@ WHITE = (255, 255, 255, 255)
 # the squircle corner cut, and Android's adaptive foreground stays inside the
 # circular mask crop.
 FILL_SQUARE = 0.88
-FILL_ADAPTIVE = 0.70
+# Android masks the adaptive foreground and only guarantees the middle
+# 264 of 432 — 61%. At 0.70 the mark's edges sat outside that and the
+# launcher cropped them, which is what made the icon look broken next to
+# every other app on the home screen. 0.58 keeps it clear of the mask with
+# a little room for the more aggressive masks some launchers use.
+FILL_ADAPTIVE = 0.58
 FILL_IOS = 0.84
 
 
