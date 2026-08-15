@@ -1,4 +1,3 @@
-use directories::ProjectDirs;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -354,11 +353,7 @@ pub struct Database {
 
 impl Database {
     pub fn new(db_name: &str) -> Result<Self, DatabaseError> {
-        let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-            DatabaseError::DirectoryError("Failed to get project directories".to_string())
-        })?;
-
-        let data_dir = project_dirs.data_dir();
+        let data_dir = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
         let db_dir = data_dir.join("db");
 
         fs::create_dir_all(&db_dir).map_err(|e| {
@@ -2193,11 +2188,8 @@ pub async fn insert_bulk_crawl_data(
 }
 
 pub fn create_diff_tables() -> Result<(), DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-
-    let data_dir = project_dirs.data_dir();
+    let data_dir = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let data_dir = data_dir.as_path();
     let db_dir = data_dir.join("db");
 
     fs::create_dir_all(&db_dir).map_err(|e| {
@@ -2227,11 +2219,8 @@ pub fn create_diff_tables() -> Result<(), DatabaseError> {
 }
 
 pub async fn clone_batched_crawl_into_persistent_db() -> Result<(), DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-
-    let data_dir = project_dirs.data_dir();
+    let data_dir = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let data_dir = data_dir.as_path();
     let db_dir = data_dir.join("db");
 
     let db = Database::initialize_db(&db_dir.join("deep_crawl_batches.db")).await?;
@@ -2290,10 +2279,8 @@ pub async fn create_crawl_snapshot(
     domain: String,
     created_at: String,
 ) -> Result<usize, DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-    let db_path = project_dirs.data_dir().join("db").join("deep_crawl_batches.db");
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let db_path = project_dirs.join("db").join("deep_crawl_batches.db");
 
     tokio::task::spawn_blocking(move || {
         let mut conn = Connection::open(db_path)?;
@@ -2322,10 +2309,8 @@ pub async fn create_crawl_snapshot(
 /// Make an archived crawl the active dataset so all existing DB-backed tables,
 /// exports and issue views can reuse their normal query paths.
 pub async fn restore_crawl_snapshot(session_id: i64) -> Result<usize, DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-    let db_path = project_dirs.data_dir().join("db").join("deep_crawl_batches.db");
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let db_path = project_dirs.join("db").join("deep_crawl_batches.db");
 
     tokio::task::spawn_blocking(move || {
         let mut conn = Connection::open(db_path)?;
@@ -2360,10 +2345,8 @@ pub fn delete_crawl_snapshots(session_ids: &[i32]) -> Result<(), DatabaseError> 
     if session_ids.is_empty() {
         return Ok(());
     }
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-    let db_path = project_dirs.data_dir().join("db").join("deep_crawl_batches.db");
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let db_path = project_dirs.join("db").join("deep_crawl_batches.db");
     let mut conn = Connection::open(db_path)?;
     ensure_crawl_snapshot_schema(&conn)?;
     let tx = conn.transaction()?;
@@ -2394,10 +2377,8 @@ pub struct CrawlFileInfo {
 /// Save the complete active SQLite crawl without routing it through the
 /// frontend's bounded in-memory table store.
 pub async fn save_crawl_file(path: String) -> Result<CrawlFileInfo, DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-    let source_path = project_dirs.data_dir().join("db").join("deep_crawl_batches.db");
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let source_path = project_dirs.join("db").join("deep_crawl_batches.db");
 
     tokio::task::spawn_blocking(move || {
         let destination = std::path::PathBuf::from(path);
@@ -2495,10 +2476,8 @@ pub async fn save_crawl_file(path: String) -> Result<CrawlFileInfo, DatabaseErro
 /// Open a native SQLite crawl file and make it the active dataset. JSON files
 /// from version 1 are intentionally handled by the existing frontend fallback.
 pub async fn open_crawl_file(path: String) -> Result<CrawlFileInfo, DatabaseError> {
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
-    let active_path = project_dirs.data_dir().join("db").join("deep_crawl_batches.db");
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
+    let active_path = project_dirs.join("db").join("deep_crawl_batches.db");
 
     tokio::task::spawn_blocking(move || {
         let import_path = std::path::PathBuf::from(path);
@@ -2578,11 +2557,9 @@ pub async fn check_diff_domains(_urls: Vec<String>) -> Result<(), String> {
 pub async fn analyse_diffs() -> Result<DiffAnalysis, DatabaseError> {
     println!("Analyzing diffs");
 
-    let project_dirs = ProjectDirs::from("", "", "rustyseo").ok_or_else(|| {
-        DatabaseError::DirectoryError("Failed to get project directories".to_string())
-    })?;
+    let project_dirs = crate::app_dirs::data_dir().map_err(DatabaseError::DirectoryError)?;
 
-    let db_dir = project_dirs.data_dir().join("db");
+    let db_dir = project_dirs.join("db");
     let db_path = db_dir.join("diff.db");
 
     if !db_path.exists() {

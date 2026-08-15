@@ -16,7 +16,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { motion, AnimatePresence } from "framer-motion";
 
 // Near-black rather than black: a true #000 makes the OLED edges of a phone
 // bleed into the bezel and hides every border we draw.
@@ -191,57 +190,68 @@ function Sheet({ open, title, subtitle, onClose, children }) {
     return () => { document.body.style.overflow = previous; };
   }, [open]);
 
+  // Kept mounted for one frame at its closed offset, then slid in by a CSS
+  // transition. framer-motion drove this before, and on Android's WebView its
+  // animations did not always run: elements stayed at their initial state, so
+  // the page opened black and only appeared once a tap forced a re-render.
+  // Nothing here needs JavaScript to reach its visible state.
+  const [mounted, setMounted] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      const id = requestAnimationFrame(() => setShown(true));
+      return () => cancelAnimationFrame(id);
+    }
+    setShown(false);
+    const id = setTimeout(() => setMounted(false), 220);
+    return () => clearTimeout(id);
+  }, [open]);
+
+  if (!mounted) return null;
+
   return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            onClick={onClose}
-            className="fixed inset-0 z-[90]"
-            style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(2px)" }}
-          />
-          <motion.div
-            initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-            transition={{ type: "spring", stiffness: 380, damping: 38 }}
-            drag="y"
-            dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={{ top: 0, bottom: 0.4 }}
-            onDragEnd={(_, info) => {
-              // Flick down, or drag past a third of the way — the two gestures
-              // people actually use to dismiss a sheet.
-              if (info.offset.y > 120 || info.velocity.y > 600) onClose();
-            }}
-            className="fixed inset-x-0 bottom-0 z-[91] rounded-t-3xl overflow-hidden flex flex-col"
-            style={{
-              background: SURFACE,
-              borderTop: `1px solid ${LINE}`,
-              maxHeight: "88vh",
-              boxShadow: "0 -24px 60px rgba(0,0,0,0.6)",
-            }}
-          >
-            <div className="pt-2.5 pb-1 flex justify-center shrink-0">
-              <div className="h-1 w-10 rounded-full" style={{ background: LINE }} />
-            </div>
-            <div className="px-5 pb-3 flex items-start gap-3 shrink-0">
-              <div className="flex-1 min-w-0">
-                <h2 className="text-base font-extrabold" style={{ color: TEXT }}>{title}</h2>
-                {subtitle && (
-                  <p className="text-[11px] mt-0.5" style={{ color: MUTED }}>{subtitle}</p>
-                )}
-              </div>
-              <button onClick={onClose} aria-label="بستن" className="p-1 -m-1 shrink-0">
-                <Icon d={PATHS.close} size={18} color={MUTED} />
-              </button>
-            </div>
-            <div className="px-5 pb-8 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
-              {children}
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+    <>
+      <div
+        onClick={onClose}
+        className="fixed inset-0 z-[90]"
+        style={{
+          background: "rgba(0,0,0,0.72)",
+          opacity: shown ? 1 : 0,
+          transition: "opacity 180ms ease",
+        }}
+      />
+      <div
+        className="fixed inset-x-0 bottom-0 z-[91] rounded-t-3xl overflow-hidden flex flex-col"
+        style={{
+          background: SURFACE,
+          borderTop: `1px solid ${LINE}`,
+          maxHeight: "88vh",
+          boxShadow: "0 -24px 60px rgba(0,0,0,0.6)",
+          transform: shown ? "translateY(0)" : "translateY(100%)",
+          transition: "transform 220ms cubic-bezier(0.32, 0.72, 0, 1)",
+        }}
+      >
+        <div className="pt-2.5 pb-1 flex justify-center shrink-0">
+          <div className="h-1 w-10 rounded-full" style={{ background: LINE }} />
+        </div>
+        <div className="px-5 pb-3 flex items-start gap-3 shrink-0">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-extrabold" style={{ color: TEXT }}>{title}</h2>
+            {subtitle && (
+              <p className="text-[11px] mt-0.5" style={{ color: MUTED }}>{subtitle}</p>
+            )}
+          </div>
+          <button onClick={onClose} aria-label="بستن" className="p-1 -m-1 shrink-0">
+            <Icon d={PATHS.close} size={18} color={MUTED} />
+          </button>
+        </div>
+        <div className="px-5 pb-8 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+          {children}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -522,16 +532,15 @@ export default function MobilePage() {
           className="mt-7 flex flex-col items-center active:opacity-70 transition-opacity">
           <svg width="140" height="140" viewBox="0 0 140 140">
             <circle cx="70" cy="70" r={R} fill="none" stroke={LINE} strokeWidth="9" />
-            <motion.circle
+            {/* The arc is correct on first paint and merely transitions to
+                it, so a WebView that skips the animation still shows the
+                right number rather than an empty ring. */}
+            <circle
               cx="70" cy="70" r={R} fill="none" stroke={g.tone} strokeWidth="9"
               strokeLinecap="round" transform="rotate(-90 70 70)"
-              // Offset, not dasharray: a two-part dash string is a string to
-              // the animator, and it interpolated to something arbitrary — a
-              // score of 96 drew a 7% arc. One number animates predictably.
               strokeDasharray={C}
-              initial={{ strokeDashoffset: C }}
-              animate={{ strokeDashoffset: C - (result.score / 100) * C }}
-              transition={{ duration: 0.9, ease: "easeOut" }}
+              strokeDashoffset={C - (result.score / 100) * C}
+              style={{ transition: "stroke-dashoffset 900ms ease-out" }}
             />
             <text x="70" y="66" textAnchor="middle" fontSize="34" fontWeight="800" fill={TEXT}>
               {result.score}
@@ -728,7 +737,7 @@ export default function MobilePage() {
       {/* Icon-only pill, the shape this app had before: wide targets, no
           labels, and the active one filled rather than tinted. */}
       <nav dir="ltr"
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-2 rounded-full px-3 py-2"
+        className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 rounded-full px-4 py-2.5"
         style={{
           background: "rgba(20,20,22,0.94)",
           border: `1px solid ${LINE}`,
@@ -747,11 +756,11 @@ export default function MobilePage() {
             <button key={t.key} onClick={() => setTab(t.key)} aria-label={t.label}
               className="flex items-center justify-center rounded-full active:opacity-70 transition-all"
               style={{
-                width: 78, height: 52,
+                width: 96, height: 62,
                 background: active ? YELLOW : "transparent",
                 boxShadow: active ? "0 6px 16px rgba(245,197,24,0.28)" : "none",
               }}>
-              <Icon d={t.d} size={26} color={active ? INK : MUTED} />
+              <Icon d={t.d} size={30} color={active ? INK : MUTED} />
             </button>
           );
         })}

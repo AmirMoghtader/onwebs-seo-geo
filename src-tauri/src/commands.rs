@@ -42,7 +42,7 @@ pub async fn check_link_status(url: String) -> Result<Vec<libs::LinkStatus>, Str
 #[tauri::command]
 pub fn write_model_to_disk(model: String) -> Result<String, String> {
     // Define the project directory and the path for the model
-    let config_dir = directories::ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or("Failed to get project directories")?;
     let model_dir = config_dir.data_dir().join("models");
     fs::create_dir_all(&model_dir) // Ensure the directory exists

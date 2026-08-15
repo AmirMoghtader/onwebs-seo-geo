@@ -9,7 +9,7 @@ use tokio::fs;
 //----------- Get the AI MODEL -------------
 // Read the file
 async fn read_model_file() -> Result<String, Box<dyn std::error::Error>> {
-    let config_dir = directories::ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or("Failed to get project directories")?;
     let models_dir = config_dir.data_dir().join("models");
 

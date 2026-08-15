@@ -1,5 +1,4 @@
 use chrono::Utc;
-use directories::ProjectDirs;
 use hyper::Client as HyperClient;
 use hyper_rustls::HttpsConnectorBuilder;
 use reqwest::Client;
@@ -254,7 +253,7 @@ pub fn get_indexation_status(document: &Html) -> String {
 #[tauri::command]
 pub async fn load_api_keys() -> Result<ApiKeys, String> {
     let config_dir =
-        ProjectDirs::from("", "", "rustyseo").ok_or_else(|| "Failed to get project directories")?;
+        crate::app_dirs::project_dirs().ok_or_else(|| "Failed to get project directories")?;
     let config_file = config_dir.config_dir().join("api_keys.toml");
 
     // Create the config directory if it doesn't exist
@@ -459,7 +458,7 @@ pub struct Credentials {
 #[tauri::command]
 pub async fn read_credentials_file() -> Result<InstalledInfo, String> {
     let config_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Failed to get project directories");
+        crate::app_dirs::project_dirs().expect("Failed to get project directories");
     let config_dir = config_dirs.data_dir();
     let secret_file = config_dir.join("client_secret.json");
 
@@ -532,7 +531,7 @@ pub async fn set_search_console_credentials(credentials: Credentials) -> Result<
     };
 
     // Get the project directories
-    let config_dirs = match ProjectDirs::from("", "", "rustyseo") {
+    let config_dirs = match crate::app_dirs::project_dirs() {
         Some(dirs) => dirs,
         None => return Err("Failed to get project directories".to_string()),
     };
@@ -591,14 +590,14 @@ pub async fn get_google_search_console(
         token_str
     } else {
         // Set up the OAuth2 flow
-        let secret_path = directories::ProjectDirs::from("", "", "rustyseo")
+        let secret_path = crate::app_dirs::project_dirs()
             .expect("Failed to get project directories")
             .data_dir()
             .join("client_secret.json");
         let secret = yup_oauth2::read_application_secret(&secret_path).await?;
 
         // Create an authenticator
-        let auth_path = directories::ProjectDirs::from("", "", "rustyseo")
+        let auth_path = crate::app_dirs::project_dirs()
             .expect("Failed to get project directories")
             .data_dir()
             .join("tokencache.json");
@@ -899,7 +898,7 @@ pub async fn refresh_google_token(
 // ------ GA4 CREDENTIALS MANAGEMENT
 
 pub async fn set_google_analytics_credentials(credentials: GA4Credentials) -> Result<(), String> {
-    let config_dir = ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let config_dir = config_dir.data_dir();
     let file_path = config_dir.join("ga4_credentials.json");
@@ -920,7 +919,7 @@ pub async fn set_google_analytics_credentials(credentials: GA4Credentials) -> Re
 }
 
 pub async fn read_ga4_credentials_file() -> Result<GA4Credentials, String> {
-    let config_dir = ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let data_dir = config_dir.data_dir(); // Use data_dir as the base for credentials
     let file_path = data_dir.join("ga4_credentials.json");
@@ -1021,7 +1020,7 @@ pub async fn get_google_analytics(
 
     // Set the directories for the client_secret.json file
     let config_dir =
-        ProjectDirs::from("", "", "rustyseo").ok_or_else(|| "Failed to get project directories")?;
+        crate::app_dirs::project_dirs().ok_or_else(|| "Failed to get project directories")?;
     let config_dir = config_dir.data_dir();
     let secret_path = config_dir.join("client_secret.json");
 
@@ -1266,7 +1265,7 @@ pub async fn set_microsoft_clarity_credentials(
     token: String,
 ) -> Result<String, String> {
     // set the directories
-    let config_dir = ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let config_dir = config_dir.data_dir();
     let file_path = config_dir.join("clarity.toml");
@@ -1292,7 +1291,7 @@ pub async fn set_microsoft_clarity_credentials(
 
 // ------ GET THE MICROSOFTY CLARITY CREDENTIALS
 pub async fn get_microsoft_clarity_credentials() -> Result<Vec<String>, String> {
-    let config_dir = ProjectDirs::from("", "", "rustyseo")
+    let config_dir = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let config_dir = config_dir.data_dir();
     let file_path = config_dir.join("clarity.toml");

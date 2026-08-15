@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- White launcher-icon background per the brand rule: launchers white,
-         everything else transparent. -->
     <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- INK, the phone app's background. -->
+    <color name="window_background">#0A0A0B</color>
 </resources>

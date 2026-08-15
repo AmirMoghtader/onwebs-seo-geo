@@ -1,6 +1,21 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
-    <style name="Theme.app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+    <!-- Base application theme.
+
+         Deliberately Light, and deliberately not DayNight. The app paints its
+         own dark colours in the WebView; the Android theme only decides
+         whether the system is allowed to repaint them.
+
+         With a DayNight parent and the phone in dark mode, `targetSdk 36`
+         lets WebView apply algorithmic darkening — and it did, to a page that
+         was already dark. Near-white text came out grey, every surface close
+         to the background vanished, and the bottom bar lost its pill and its
+         middle button entirely. `forceDarkAllowed` does not cover this path
+         on API 33+, so the condition is removed instead of argued with.
+
+         The window background stays INK so the app still opens on its own
+         colour rather than a white flash. -->
+    <style name="Theme.app" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
+        <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>

@@ -1,4 +1,3 @@
-use directories::ProjectDirs;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use tokio::task;
@@ -21,7 +20,7 @@ impl DomainDataBase {
 
 pub fn open_domain_db_connection(db_name: &str) -> Result<Connection> {
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Error creating directory for DB");
+        crate::app_dirs::project_dirs().expect("Error creating directory for DB");
 
     // Define the directory of the domain db file
     let db_dir = project_dirs.data_dir().join("db"); // appends /db to the data dir
@@ -572,7 +571,7 @@ pub fn set_custom_search_rule_enabled(id: i64, enabled: bool) -> Result<(), Stri
 // since this is called for every URL during crawling.
 pub async fn fetch_enabled_custom_search_rules() -> Result<Vec<CustomSearchRule>, String> {
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Failed to get project directories");
+        crate::app_dirs::project_dirs().expect("Failed to get project directories");
 
     let db_dir = project_dirs.data_dir().join("db");
     let db_path = db_dir.join("deep_crawl.db");

@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use directories::ProjectDirs;
 use reqwest;
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +114,7 @@ pub fn set_gemini_api_key(
     gemini_model: String,
 ) -> Result<GeminiApiKey, String> {
     // create the config directory if it doesn't exist
-    let config_dirs = ProjectDirs::from("", "", "rustyseo")
+    let config_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
 
     let config_dir = config_dirs.config_dir();
@@ -153,7 +152,7 @@ pub fn set_gemini_api_key(
 #[tauri::command]
 pub fn get_gemini_config_command() -> Result<GeminiApiKey, String> {
     // create the config directory if it doesn't exist
-    let config_dirs = ProjectDirs::from("", "", "rustyseo")
+    let config_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
 
     let config_dir = config_dirs.config_dir();

@@ -1,11 +1,10 @@
-use directories::ProjectDirs;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn open_issues_db_connection() -> Result<Connection> {
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Error creating directory for DB");
+        crate::app_dirs::project_dirs().expect("Error creating directory for DB");
     let db_dir = project_dirs.data_dir().join("db");
 
     if !db_dir.exists() {

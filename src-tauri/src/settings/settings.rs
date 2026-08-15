@@ -1,4 +1,3 @@
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -592,9 +591,7 @@ impl Settings {
     }
 
     pub fn config_path() -> Result<PathBuf, String> {
-        ProjectDirs::from("", "", "rustyseo")
-            .ok_or("Failed to determine config directory".to_string())
-            .map(|dirs| dirs.config_dir().join("configs.toml"))
+        crate::app_dirs::config_dir().map(|dir| dir.join("configs.toml"))
     }
 
     /// Bring older config files forward without discarding user choices.
@@ -1268,10 +1265,7 @@ pub fn get_system() -> Result<Value, String> {
 // REMOVE ALL THE FOLDERS IN THE CONFIG PATH
 #[tauri::command]
 pub async fn delete_config_folders_command() -> Result<(), String> {
-    let config_path = directories::ProjectDirs::from("", "", "rustyseo")
-        .ok_or("Failed to determine config directory".to_string())?
-        .config_dir()
-        .to_path_buf();
+    let config_path = crate::app_dirs::config_dir()?;
     if config_path.exists() {
         fs::remove_dir_all(&config_path)
             .await
@@ -1286,7 +1280,7 @@ pub async fn delete_config_folders_command() -> Result<(), String> {
 // OPEN THE CONFIG FOLDER IN THE FILE EXPLORER
 #[tauri::command]
 pub fn open_config_folder_command() -> Result<(), String> {
-    let config_path = directories::ProjectDirs::from("", "", "rustyseo")
+    let config_path = crate::app_dirs::project_dirs()
         .ok_or("Failed to determine config directory".to_string())?
         .config_dir()
         .to_path_buf();

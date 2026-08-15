@@ -1,4 +1,3 @@
-use directories::ProjectDirs;
 use genai::chat::{ChatMessage, ChatRequest, ChatResponse};
 use genai::client::Client;
 use std::error::Error;
@@ -11,7 +10,7 @@ use crate::globals::actions;
 #[tauri::command]
 pub fn get_ai_model() -> String {
     // Check in the directories for the model being used and return it
-    ProjectDirs::from("", "", "rustyseo")
+    crate::app_dirs::project_dirs()
         .map(|project_dirs| project_dirs.data_dir().join("models").join("ai.toml"))
         .and_then(|model_path| std::fs::read_to_string(model_path).ok())
         .unwrap_or_else(|| {

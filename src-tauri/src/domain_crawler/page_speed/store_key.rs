@@ -1,6 +1,5 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
-use directories::ProjectDirs;
 use tauri::Emitter;
 
 use crate::settings;
@@ -10,7 +9,7 @@ pub async fn read_page_speed_bulk_api_key(
     settings_state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
     // Get the config file path
-    let file_path: PathBuf = ProjectDirs::from("", "", "rustyseo")
+    let file_path: PathBuf = crate::app_dirs::project_dirs()
         .ok_or("Failed to get config directory")?
         .config_dir()
         .join("api_keys.toml");

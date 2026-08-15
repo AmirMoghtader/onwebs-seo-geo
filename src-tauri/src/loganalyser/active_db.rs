@@ -1,5 +1,4 @@
 use crate::loganalyser::analyser::LogEntry;
-use directories::ProjectDirs;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,7 +20,7 @@ pub fn init_active_db() -> Result<(), String> {
         }
     }
 
-    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
 
     let db_dir = project_dirs.data_dir().join("db");
@@ -322,7 +321,7 @@ pub async fn get_trend_totals_summary() -> Result<TrendTotalsSummary, String> {
     // the ~20 queries below caused the 5-second freeze observed when the
     // "Trend Totals" / "Crawl Sync" tab is visible and the polling interval fires.
     // WAL mode allows concurrent readers on separate connections with no blocking.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -467,7 +466,7 @@ pub async fn get_trend_totals_summary() -> Result<TrendTotalsSummary, String> {
 /// from the frontend (triggered immediately after "log-analysis-complete") are not
 /// blocked. SQLite WAL mode allows readers on DB_CONN to proceed while this writer runs.
 pub fn rebuild_core_aggregations_internal() -> Result<(), String> {
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
 
@@ -632,7 +631,7 @@ pub fn rebuild_core_aggregations_incremental(new_filenames: &[String]) -> Result
     if new_filenames.is_empty() {
         return rebuild_core_aggregations_internal();
     }
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -892,7 +891,7 @@ pub fn drop_parsed_log_indexes() -> Result<(), String> {
 /// DB_CONN.lock() for the entire duration, causing the frontend "beach ball" freeze
 /// that appears when appending 30+ large log files.
 pub fn recreate_parsed_log_indexes() -> Result<(), String> {
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
 
@@ -1405,7 +1404,7 @@ pub async fn get_active_logs_page(
     // Use a dedicated read-only connection so this COUNT(*) + SELECT do NOT hold
     // DB_CONN's mutex. In WAL mode concurrent readers on separate connections
     // never block each other or the writer, so this is safe.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1497,7 +1496,7 @@ pub async fn get_active_logs_page(
 #[tauri::command]
 pub async fn get_all_logs_with_filters(filters: ActiveFilters) -> Result<FilteredLogsPage, String> {
     init_active_db()?;
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1624,7 +1623,7 @@ pub async fn get_timeline_aggregations(
     init_active_db()?;
     // Dedicated connection — never holds DB_CONN.lock() so insert_active_logs_batch
     // and other DB_CONN commands can run concurrently without blocking each other.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1704,7 +1703,7 @@ pub async fn get_status_aggregations(
 ) -> Result<Vec<StatusPoint>, String> {
     init_active_db()?;
     // Dedicated connection — same rationale as get_timeline_aggregations.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1791,7 +1790,7 @@ pub async fn get_crawler_aggregations(
     // get_status_aggregations. Without it, get_crawler_aggregations held DB_CONN.lock()
     // for several seconds at 2M+ rows, causing a WebKit IPC timeout / beach-ball freeze.
     if use_agg {
-        let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+        let project_dirs = crate::app_dirs::project_dirs()
             .ok_or_else(|| "Failed to get project directories".to_string())?;
         let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
         let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1826,7 +1825,7 @@ pub async fn get_crawler_aggregations(
 
     // Slow path (filtered): open a dedicated connection so we don't hold DB_CONN.lock()
     // for the duration of two expensive full-table scans.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1921,7 +1920,7 @@ pub async fn get_filetype_aggregations(
     filters: ActiveFilters,
 ) -> Result<Vec<FileTypePoint>, String> {
     init_active_db()?;
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -1988,7 +1987,7 @@ pub async fn get_bandwidth_aggregations(
     filters: ActiveFilters,
 ) -> Result<Vec<BandwidthPoint>, String> {
     init_active_db()?;
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -2054,7 +2053,7 @@ pub async fn get_widget_aggregations(filters: ActiveFilters) -> Result<WidgetAgg
     init_active_db()?;
     // Use a dedicated read-only connection — same rationale as get_active_logs_page.
     // This function runs many queries and must not block DB_CONN for other callers.
-    let project_dirs = directories::ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let db_path = project_dirs.data_dir().join("db").join("active_logs.db");
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;

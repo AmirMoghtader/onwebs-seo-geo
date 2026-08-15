@@ -3,7 +3,6 @@ use crate::domain_crawler::db_deep::db;
 use crate::domain_crawler::domain_commands;
 use crate::loganalyser::database::remove_all_logs_from_serverlog_db;
 use crawler::{CrawlResult, LinkResult, PageSpeedResponse, SeoPageSpeedResponse};
-use directories::ProjectDirs;
 use globals::actions;
 use serde::{Deserialize, Serialize};
 use settings::settings::delete_config_folders_command;
@@ -27,7 +26,8 @@ pub mod api;
 #[cfg(desktop)]
 pub mod app_menu;
 pub mod chat;
-pub mod crawler;
+pub mod app_dirs;
+mod crawler;
 pub mod domain_crawler;
 pub mod logging;
 pub mod settings;
@@ -246,6 +246,14 @@ async fn run_async() {
     builder
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            // Must happen before anything opens a store: on Android this is
+            // the only way to learn where the app may write, and the storage
+            // code has no AppHandle of its own to ask.
+            match tauri::Manager::path(app).app_data_dir() {
+                Ok(dir) => app_dirs::set_app_data_dir(dir),
+                Err(error) => eprintln!("Could not resolve the app data dir: {}", error),
+            }
 
             // Clear the active DB & Server logs unconditionally on backend start
             println!("App starting, unconditionally clearing active DB...");
@@ -479,7 +487,7 @@ async fn run_async() {
 #[tauri::command]
 async fn add_api_key(key: String, api_type: String) -> Result<String, String> {
     // Create config directory
-    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
     let config_dir = project_dirs.config_dir();
 

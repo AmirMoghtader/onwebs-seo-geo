@@ -84,7 +84,17 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        {/* The phone build is an app, not a web page: pinch-zoom there just
+            leaves the layout stranded at a scale the design never accounts
+            for. The desktop shell keeps zoom, where it is a real affordance. */}
+        <meta
+          name="viewport"
+          content={
+            isMobileShell
+              ? "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+              : "width=device-width, initial-scale=1, viewport-fit=cover"
+          }
+        />
         {isMobileShell && <meta name="color-scheme" content="dark" />}
       </head>
       <body

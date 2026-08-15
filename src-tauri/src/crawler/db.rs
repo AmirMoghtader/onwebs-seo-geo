@@ -1,5 +1,4 @@
 use chrono::Utc;
-use directories::ProjectDirs;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -57,7 +56,7 @@ pub struct SEOResultRecord {
 
 pub fn open_db_connection(db_name: &str) -> Result<Connection> {
     // Retrieve the config directory for the application
-    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
 
     // Define the directory for the DB file

@@ -1,6 +1,5 @@
 use crate::crawler::libs::read_credentials_file;
 use crate::crawler::libs::InstalledInfo;
-use directories::ProjectDirs;
 use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
@@ -11,7 +10,7 @@ pub fn uuid_creation_check() -> String {
     // CHECK FOR THE FILE IN THE CONFIG DIRECTORY
     println!("Checking for UUID file");
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Failed to get project directories");
+        crate::app_dirs::project_dirs().expect("Failed to get project directories");
     println!("Config directory: {:?}", project_dirs.config_dir());
     let config_dir = project_dirs.config_dir();
     let uuid_file = config_dir.join("uuid.toml");
@@ -45,7 +44,7 @@ pub fn ai_model_selected(model: String) -> Result<String, String> {
     // CHECK FOR THE FILE IN THE CONFIG DIRECTORY
     println!("Checking for AI Model file");
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Failed to get project directories");
+        crate::app_dirs::project_dirs().expect("Failed to get project directories");
     println!("Config directory: {:?}", project_dirs.config_dir());
     let config_dir = project_dirs.config_dir();
     let ai_model_file = config_dir.join("chosen_ai_model.toml");
@@ -81,7 +80,7 @@ pub fn ai_model_read() -> String {
     // CHECK FOR THE FILE IN THE CONFIG DIRECTORY
     println!("Checking for AI Model file");
     let project_dirs =
-        ProjectDirs::from("", "", "rustyseo").expect("Failed to get project directories");
+        crate::app_dirs::project_dirs().expect("Failed to get project directories");
     println!("Config directory: {:?}", project_dirs.config_dir());
     let config_dir = project_dirs.config_dir();
     let ai_model_file = config_dir.join("chosen_ai_model.toml");

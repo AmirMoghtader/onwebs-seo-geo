@@ -1,5 +1,4 @@
 use csv::Writer;
-use directories::ProjectDirs;
 use rusqlite::{Connection, Result as SqlResult};
 use std::{error::Error, fs, path::Path};
 use tauri::command;
@@ -106,7 +105,7 @@ fn initialize_db(db_path: &Path) -> Result<(), String> {
 #[command]
 pub fn generate_seo_csv() -> Result<String, String> {
     // Retrieve the config directory for the application
-    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
 
     // Define the directory for the DB file
@@ -162,7 +161,7 @@ pub fn generate_seo_csv() -> Result<String, String> {
 #[command]
 pub fn generate_csv_command() -> Result<String, String> {
     // Retrieve the config directory for the application
-    let project_dirs = ProjectDirs::from("", "", "rustyseo")
+    let project_dirs = crate::app_dirs::project_dirs()
         .ok_or_else(|| "Failed to get project directories".to_string())?;
 
     // Define the directory for the DB file
