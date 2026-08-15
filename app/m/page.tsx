@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 
 // Near-black rather than black: a true #000 makes the OLED edges of a phone
 // bleed into the bezel and hides every border we draw.
@@ -255,6 +256,32 @@ function Sheet({ open, title, subtitle, onClose, children }) {
   );
 }
 
+/** Hands a URL to the phone's browser.
+ *
+ * These are other people's pages: opening them inside the app would leave the
+ * visitor stranded in a window with no address bar and no way back.
+ */
+async function openInBrowser(url: string) {
+  if (!url) return;
+  try {
+    await openExternal(url);
+  } catch (error) {
+    console.error("Could not open", url, error);
+  }
+}
+
+/** A URL that opens in the browser when tapped. */
+const LinkRow = ({ url }: { url: string }) => (
+  <button
+    onClick={() => openInBrowser(url)}
+    dir="ltr"
+    className="w-full text-left text-[11px] px-3 py-2 break-all active:opacity-60 transition-opacity"
+    style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}
+  >
+    {url}
+  </button>
+);
+
 /** A tappable row. The whole thing is the target — never just the chevron. */
 const Row = ({ icon, title, meta, onClick, right = null }) => (
   <button
@@ -333,11 +360,22 @@ export default function MobilePage() {
 
   useEffect(() => {
     let un1, un2;
+    // Results arrive in bursts, each carrying a whole page. Re-rendering on
+    // every one starved the WebView's main thread: the bottom bar stopped
+    // responding for the length of the crawl. The pages still accumulate on
+    // every event — only the render is rationed.
+    let pending = false;
+    const flush = () => {
+      pending = false;
+      setCount(pagesRef.current.length);
+    };
     listen("crawl_result", (e) => {
       const batch = e?.payload?.results || (e?.payload?.result ? [e.payload.result] : []);
-      if (batch.length) {
-        pagesRef.current.push(...batch);
-        setCount(pagesRef.current.length);
+      if (!batch.length) return;
+      pagesRef.current.push(...batch);
+      if (!pending) {
+        pending = true;
+        setTimeout(flush, 400);
       }
     }).then((u) => (un1 = u));
     listen("crawl_complete", () => {
@@ -351,6 +389,17 @@ export default function MobilePage() {
     let domain = url.trim();
     if (!domain) return;
     if (!/^https?:\/\//i.test(domain)) domain = "https://" + domain;
+    // The backend refuses a second crawl while one is registered as running,
+    // and the phone app has no Stop button — so pressing بررسی again did
+    // nothing at all. Asking the previous crawl to stop makes the button mean
+    // "start this one", which is what it looks like it means.
+    try {
+      await invoke("stop_crawl_command");
+      await new Promise((r) => setTimeout(r, 400));
+    } catch {
+      // Nothing was running; that is the normal case.
+    }
+
     pagesRef.current = [];
     setCount(0);
     setResult(null);
@@ -649,9 +698,7 @@ export default function MobilePage() {
                 </h3>
                 <div className="rounded-xl overflow-hidden" style={{ background: RAISED }}>
                   {issue.urls.map((u) => (
-                    <p key={u} dir="ltr"
-                      className="text-[11px] px-3 py-2 text-left break-all"
-                      style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}>{u}</p>
+                    <LinkRow key={u} url={u} />
                   ))}
                 </div>
               </>
@@ -692,6 +739,15 @@ export default function MobilePage() {
       <Sheet open={sheet?.kind === "historyEntry"} onClose={closeSheet}
         title={sheet?.data?.domain || ""}
         subtitle={sheet?.data ? `${sheet.data.pages} صفحه · امتیاز ${sheet.data.score}` : ""}>
+        <button
+          onClick={() => openInBrowser(
+            /^https?:\/\//i.test(sheet.data.domain) ? sheet.data.domain : `https://${sheet.data.domain}`,
+          )}
+          className="w-full rounded-xl py-3 text-[13px] font-bold mb-2"
+          style={{ background: RAISED, color: YELLOW }}
+        >
+          باز کردن سایت در مرورگر
+        </button>
         <button onClick={() => openHistoryEntry(sheet.data)}
           className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
           style={{ background: YELLOW, color: "#0A0A0B" }}>

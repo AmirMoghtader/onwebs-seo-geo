@@ -18,6 +18,17 @@ use crate::version::local_version;
 
 /// Three, against `max_retries`' two: a truncated body is cheap to re-ask for
 /// and usually succeeds on the next try.
+/// A phone is not a desktop: the same six parallel fetches, each followed by
+/// HTML parsing, starve the WebView and the interface stops answering taps
+/// while a crawl runs. Three keeps the app usable and still finishes.
+pub fn default_concurrent_requests() -> usize {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        3
+    } else {
+        6
+    }
+}
+
 pub fn default_body_read_attempts() -> u32 {
     3
 }
@@ -257,7 +268,7 @@ impl Settings {
             // is recorded as failed. Screaming Frog finishes such a site at
             // ~1.7 URL/s; a crawl that completes slowly beats one that dies
             // fast. Users on fast hosts can raise this in Settings.
-            concurrent_requests: 6,
+            concurrent_requests: default_concurrent_requests(),
             batch_size: 40,
             max_depth: 50,
             max_urls_per_domain: 100000,
