@@ -392,6 +392,63 @@ pub async fn get_broken_links_command() -> Result<Value, String> {
     db.get_broken_links().await.map_err(|e| e.to_string())
 }
 
+/// Measures a site before agreeing to crawl it.
+///
+/// The phone asks this first so it can warn about — or refuse — a site that
+/// would run for hours and fill the device. See `site_size` for the reasoning
+/// behind the thresholds.
+#[tauri::command]
+pub async fn estimate_site_size_command(
+    domain: String,
+    settings_state: tauri::State<'_, AppState>,
+) -> Result<Value, String> {
+    let ua = {
+        let settings = settings_state.settings.read().await;
+        settings.robots_user_agent.clone()
+    };
+    let size = crate::domain_crawler::site_size::measure(&domain, &ua).await?;
+    serde_json::to_value(size).map_err(|e| e.to_string())
+}
+
+/// Crawls a domain, stopping after `max_urls` addresses.
+///
+/// The phone offers this for a site too large to finish: a sample big enough
+/// to judge the site by, rather than a crawl that never ends. The cap is a
+/// setting, so it is swapped for the run and restored however this returns.
+#[tauri::command]
+pub async fn domain_crawl_limited_command(
+    domain: String,
+    max_urls: usize,
+    app_handle: tauri::AppHandle,
+    settings_state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    struct RestoreCap {
+        state: Arc<tokio::sync::RwLock<crate::settings::settings::Settings>>,
+        previous: usize,
+    }
+    impl Drop for RestoreCap {
+        fn drop(&mut self) {
+            let state = self.state.clone();
+            let previous = self.previous;
+            tokio::spawn(async move {
+                state.write().await.max_urls_per_domain = previous;
+            });
+        }
+    }
+
+    let _restore = {
+        let mut settings = settings_state.settings.write().await;
+        let restore = RestoreCap {
+            state: settings_state.settings.clone(),
+            previous: settings.max_urls_per_domain,
+        };
+        settings.max_urls_per_domain = max_urls;
+        restore
+    };
+
+    domain_crawl_command(domain, app_handle, settings_state).await
+}
+
 /// Empties the current crawl so the next one starts from nothing.
 ///
 /// Screaming Frog has this next to its address bar and we did not, so the only

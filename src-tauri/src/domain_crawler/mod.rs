@@ -11,6 +11,7 @@ pub mod issues_report;
 pub mod link_score;
 pub mod models;
 pub mod page_speed;
+pub mod site_size;
 pub mod state;
 pub mod url_processor;
 pub mod user_agents;

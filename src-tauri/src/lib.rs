@@ -390,6 +390,8 @@ async fn run_async() {
             domain_commands::clear_crawl_data_command,
             domain_commands::get_inlink_counts_command,
             domain_commands::get_broken_links_command,
+            domain_commands::estimate_site_size_command,
+            domain_commands::domain_crawl_limited_command,
             domain_commands::retry_urls_command,
             domain_commands::get_links_page_command,
             domain_commands::get_incoming_links_command,

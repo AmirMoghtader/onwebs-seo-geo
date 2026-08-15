@@ -299,6 +299,25 @@ const Row = ({ icon, title, meta, onClick, right = null }) => (
   </button>
 );
 
+/** Shown one at a time while a crawl runs.
+ *
+ * A crawl takes minutes and a spinner says nothing for all of them. These are
+ * the findings the crawler actually reports, explained — so the wait teaches
+ * the person something about the report they are about to read.
+ */
+const TIPS = [
+  "تایتل هر صفحه باید یکتا باشد. دو صفحه با یک تایتل، گوگل را مجبور می‌کند بین‌شان یکی را انتخاب کند.",
+  "توضیحات متا روی رتبه اثر مستقیم ندارد، ولی روی نرخ کلیک دارد — همان جمله‌ای است که در نتایج جستجو خوانده می‌شود.",
+  "هر صفحه یک H1 می‌خواهد؛ نه صفر، نه پنج‌تا. H1 می‌گوید این صفحه دربارهٔ چیست.",
+  "لینک شکسته دو چیز را هدر می‌دهد: اعتبار لینک‌ها و بودجهٔ خزش گوگل.",
+  "صفحهٔ زیر ۳۰۰ کلمه معمولاً برای پاسخ دادن به یک جستجو کافی نیست.",
+  "ریدایرکت زنجیره‌ای هر بار کمی از اعتبار را می‌خورد. مستقیم به مقصد نهایی وصل کن.",
+  "صفحه‌ای که noindex دارد از نتایج بیرون می‌ماند — حتی اگر بهترین محتوای سایتت باشد.",
+  "سرعت پاسخ سرور جزو فاکتورهای رتبه است. کاربر موبایل زودتر از گوگل می‌رود.",
+  "تصویر بدون alt هم برای نابینا نامرئی است هم برای جستجوی تصویر گوگل.",
+  "ChatGPT و Perplexity هم سایتت را می‌خوانند؛ ساختار تمیز یعنی در جواب‌های AI هم دیده شوی.",
+];
+
 export default function MobilePage() {
   const [url, setUrl] = useState("");
   const [phase, setPhase] = useState<"idle" | "crawling" | "done">("idle");
@@ -314,6 +333,12 @@ export default function MobilePage() {
   const [demoSample, setDemoSample] = useState(false);
   /** Why the last crawl could not start, shown instead of failing silently. */
   const [failure, setFailure] = useState<string | null>(null);
+  /** True while the site is being measured, before any crawling starts. */
+  const [sizing, setSizing] = useState(false);
+  /** Findings so far, recomputed as results arrive so the list fills up while
+   *  the crawl runs rather than appearing all at once at the end. */
+  const [liveIssues, setLiveIssues] = useState<Issue[]>([]);
+  const [tip, setTip] = useState(0);
 
   // The single source of what is on screen above the page: { kind, data }.
   const [sheet, setSheet] = useState<{ kind: string; data?: any } | null>(null);
@@ -359,6 +384,17 @@ export default function MobilePage() {
   };
 
   useEffect(() => {
+    if (phase !== "crawling") return;
+    const rotate = setInterval(() => setTip((t) => (t + 1) % TIPS.length), 6000);
+    // Re-analysing every result would cost more than the crawl; every couple
+    // of seconds is often enough to feel live.
+    const grow = setInterval(() => {
+      if (pagesRef.current.length) setLiveIssues(analyse(pagesRef.current).issues);
+    }, 2500);
+    return () => { clearInterval(rotate); clearInterval(grow); };
+  }, [phase]);
+
+  useEffect(() => {
     let un1, un2;
     // Results arrive in bursts, each carrying a whole page. Re-rendering on
     // every one starved the WebView's main thread: the bottom bar stopped
@@ -385,10 +421,8 @@ export default function MobilePage() {
     return () => { un1?.(); un2?.(); };
   }, []);
 
-  const start = async () => {
-    let domain = url.trim();
-    if (!domain) return;
-    if (!/^https?:\/\//i.test(domain)) domain = "https://" + domain;
+  /** Runs the crawl itself, once the size question has been settled. */
+  const runCrawl = async (domain: string, cap?: number) => {
     // The backend refuses a second crawl while one is registered as running,
     // and the phone app has no Stop button — so pressing بررسی again did
     // nothing at all. Asking the previous crawl to stop makes the button mean
@@ -405,6 +439,8 @@ export default function MobilePage() {
     setResult(null);
     setDemoSample(false);
     setFailure(null);
+    setLiveIssues([]);
+    setTip(0);
     setPhase("crawling");
 
     // Browser-preview demo only: outside Tauri there is no crawler, so with
@@ -485,6 +521,46 @@ export default function MobilePage() {
     }
   };
 
+  /** Normalises what was typed into something the backend can parse. */
+  const targetUrl = () => {
+    const raw = url.trim();
+    if (!raw) return "";
+    return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  };
+
+  /** Measures the site, then either crawls it, asks, or declines.
+   *
+   * A phone pointed at a marketplace spends hours and fills its storage for
+   * nothing, and there is no way to tell that from the address alone — so the
+   * sitemaps are counted first and the answer decides.
+   */
+  const start = async () => {
+    const domain = targetUrl();
+    if (!domain) return;
+
+    setFailure(null);
+    setSizing(true);
+    let size: any = null;
+    try {
+      size = await invoke("estimate_site_size_command", { domain });
+    } catch {
+      // A site that will not answer the question still deserves a crawl; the
+      // crawler's own limits apply either way.
+    } finally {
+      setSizing(false);
+    }
+
+    if (size?.verdict === "refuse") {
+      setSheet({ kind: "tooBig", data: { domain, size } });
+      return;
+    }
+    if (size?.verdict === "warn") {
+      setSheet({ kind: "bigSite", data: { domain, size } });
+      return;
+    }
+    runCrawl(domain);
+  };
+
   const openHistoryEntry = (h) => {
     setResult(h.result);
     setCount(h.pages);
@@ -519,6 +595,11 @@ export default function MobilePage() {
       style={{ background: INK, color: TEXT }}>
 
       {/* Header: mark, then the search field. Nothing here is decorative. */}
+      <style>{`@keyframes onwebs-sweep {
+        0%   { transform: translateX(-100%) }
+        100% { transform: translateX(300%) }
+      }`}</style>
+
       <header className="w-full max-w-md pt-8 pb-5 flex flex-col items-center">
         {/* The navy mark recoloured to the one accent this screen uses. Its
             own shading is preserved so the form does not flatten into a blob. */}
@@ -543,11 +624,11 @@ export default function MobilePage() {
           style={{ color: TEXT }}
         />
         <button
-          onClick={start} disabled={!url.trim() || phase === "crawling"}
+          onClick={start} disabled={!url.trim() || phase === "crawling" || sizing}
           className="rounded-full px-4 py-1.5 text-[12px] font-extrabold disabled:opacity-30 active:scale-95 transition-transform"
           style={{ background: YELLOW, color: "#0A0A0B" }}
         >
-          {phase === "crawling" ? "…" : "بررسی"}
+          {sizing ? "…" : phase === "crawling" ? "…" : "بررسی"}
         </button>
       </div>
 
@@ -560,9 +641,59 @@ export default function MobilePage() {
       )}
 
       {phase === "crawling" && (
-        <p className="mt-4 text-[12px]" style={{ color: MUTED }}>
-          <span style={{ color: YELLOW, fontWeight: 800 }}>{count}</span> صفحه بررسی شد…
-        </p>
+        <section className="w-full max-w-md mt-6">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[12px]" style={{ color: MUTED }}>
+              <span style={{ color: YELLOW, fontWeight: 800 }}>{count}</span> صفحه بررسی شد
+            </span>
+            {liveIssues.length > 0 && (
+              <span className="text-[11px]" style={{ color: MUTED }}>
+                {liveIssues.reduce((a, i) => a + i.count, 0)} مورد تا اینجا
+              </span>
+            )}
+          </div>
+
+          {/* A bar with no end point: the total is not known until the crawl
+              finishes, so pretending to a percentage would be a lie. */}
+          <div className="h-1 w-full rounded-full overflow-hidden mb-5" style={{ background: RAISED }}>
+            <div className="h-full w-1/3 rounded-full"
+              style={{ background: YELLOW, animation: "onwebs-sweep 1.4s ease-in-out infinite" }} />
+          </div>
+
+          <div className="rounded-xl p-4 mb-5" style={{ background: SURFACE, border: `1px solid ${LINE}` }}>
+            <div className="flex items-center gap-2 mb-2">
+              <Icon d={PATHS.geo} size={16} />
+              <span className="text-[11px] font-extrabold" style={{ color: YELLOW }}>
+                در این فاصله
+              </span>
+            </div>
+            <p className="text-[12px] leading-6" style={{ color: "#C9C9CF" }}>
+              {TIPS[tip]}
+            </p>
+          </div>
+
+          {liveIssues.length > 0 && (
+            <>
+              <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>
+                تا اینجا پیدا شده
+              </h2>
+              {liveIssues.map((it) => (
+                <Row
+                  key={it.key}
+                  title={it.title}
+                  meta={`${SEV[it.severity].label} · ${it.count} صفحه`}
+                  onClick={() => setSheet({ kind: "issue", data: it })}
+                  right={
+                    <span className="text-[12px] font-extrabold tabular-nums shrink-0"
+                      style={{ color: SEV[it.severity].color }}>
+                      {it.count}
+                    </span>
+                  }
+                />
+              ))}
+            </>
+          )}
+        </section>
       )}
 
       {/* Without this, invented numbers sit under the domain someone just
@@ -761,6 +892,65 @@ export default function MobilePage() {
         </button>
       </Sheet>
 
+      {/* Between the warn and refuse thresholds: the crawl is offered, but
+          only alongside what it will cost and a smaller way to get an answer. */}
+      <Sheet open={sheet?.kind === "bigSite"} onClose={closeSheet}
+        title="این سایت بزرگ است"
+        subtitle={sheet?.data ? `حدود ${sheet.data.size.urls.toLocaleString("fa-IR")} آدرس در نقشهٔ سایت` : ""}>
+        {sheet?.data && (
+          <>
+            <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>
+              کراول کامل این تعداد روی گوشی ممکن است ساعت‌ها طول بکشد، باتری و
+              حافظه را پر کند و نیمه‌کاره بماند. می‌توانی به‌جایش نمونه‌ای از
+              {" "}{sheet.data.size.sampleSize.toLocaleString("fa-IR")} آدرس را
+              بررسی کنی — برای قضاوت دربارهٔ وضعیت سایت معمولاً کافی است.
+            </p>
+            <button
+              onClick={() => { closeSheet(); runCrawl(sheet.data.domain, sheet.data.size.sampleSize); }}
+              className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
+              style={{ background: YELLOW, color: INK }}>
+              بررسی نمونه ({sheet.data.size.sampleSize.toLocaleString("fa-IR")} آدرس)
+            </button>
+            <button
+              onClick={() => { closeSheet(); runCrawl(sheet.data.domain); }}
+              className="w-full rounded-xl py-3 text-[13px] font-bold mb-2"
+              style={{ background: RAISED, color: TEXT }}>
+              با این حال کامل کراول کن
+            </button>
+            <button onClick={closeSheet}
+              className="w-full rounded-xl py-3 text-[13px] font-bold"
+              style={{ background: "transparent", color: MUTED }}>
+              انصراف
+            </button>
+          </>
+        )}
+      </Sheet>
+
+      {/* Past the refuse threshold there is no version of this that ends well
+          on a phone, so it is declined rather than offered and abandoned. */}
+      <Sheet open={sheet?.kind === "tooBig"} onClose={closeSheet}
+        title="این سایت برای گوشی خیلی بزرگ است"
+        subtitle={sheet?.data ? `حدود ${sheet.data.size.urls.toLocaleString("fa-IR")} آدرس` : ""}>
+        {sheet?.data && (
+          <>
+            <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>
+              سقف این اپ {sheet.data.size.refuseAbove.toLocaleString("fa-IR")} آدرس
+              است. سایت‌هایی در این ابعاد — فروشگاه‌های بزرگ و مارکت‌پلیس‌ها —
+              روی گوشی تمام نمی‌شوند و فقط باتری و حافظه را می‌سوزانند.
+            </p>
+            <p className="text-[12px] leading-6 mb-4" style={{ color: MUTED }}>
+              برای این اندازه از نسخهٔ دسکتاپ استفاده کن؛ همان کراولر است بدون
+              این محدودیت.
+            </p>
+            <button onClick={closeSheet}
+              className="w-full rounded-xl py-3 text-[13px] font-extrabold"
+              style={{ background: RAISED, color: TEXT }}>
+              باشه
+            </button>
+          </>
+        )}
+      </Sheet>
+
       <Sheet open={sheet?.kind === "profile"} onClose={closeSheet}
         title="پروفایل" subtitle="فقط روی همین دستگاه ذخیره می‌شود">
         <input value={formName} onChange={(e) => setFormName(e.target.value)}
@@ -793,7 +983,7 @@ export default function MobilePage() {
       {/* Icon-only pill, the shape this app had before: wide targets, no
           labels, and the active one filled rather than tinted. */}
       <nav dir="ltr"
-        className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 rounded-full px-4 py-2.5"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-2 rounded-full px-3 py-2"
         style={{
           background: "rgba(20,20,22,0.94)",
           border: `1px solid ${LINE}`,
@@ -812,11 +1002,11 @@ export default function MobilePage() {
             <button key={t.key} onClick={() => setTab(t.key)} aria-label={t.label}
               className="flex items-center justify-center rounded-full active:opacity-70 transition-all"
               style={{
-                width: 96, height: 62,
+                width: 82, height: 54,
                 background: active ? YELLOW : "transparent",
                 boxShadow: active ? "0 6px 16px rgba(245,197,24,0.28)" : "none",
               }}>
-              <Icon d={t.d} size={30} color={active ? INK : MUTED} />
+              <Icon d={t.d} size={26} color={active ? INK : MUTED} />
             </button>
           );
         })}

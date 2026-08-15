@@ -18,15 +18,27 @@ use crate::version::local_version;
 
 /// Three, against `max_retries`' two: a truncated body is cheap to re-ask for
 /// and usually succeeds on the next try.
-/// A phone is not a desktop: the same six parallel fetches, each followed by
-/// HTML parsing, starve the WebView and the interface stops answering taps
-/// while a crawl runs. Three keeps the app usable and still finishes.
-pub fn default_concurrent_requests() -> usize {
+/// Six everywhere, phones included.
+///
+/// This was dropped to three on mobile to stop the interface freezing during a
+/// crawl, but that was treating the symptom: the freeze came from re-rendering
+/// on every result event, not from the fetches. With the render rationed, a
+/// phone on mobile data benefits from the wider fan-out — latency is what it
+/// is waiting on, and halving concurrency halved the crawl rate for nothing.
+/// A hundred thousand is a desktop's answer. A phone cannot finish that, and
+/// the sitemap check that would have warned about it only works on sites that
+/// publish one — so the ceiling is enforced here as well, where nothing can
+/// slip past it.
+pub fn default_max_urls_per_domain() -> usize {
     if cfg!(any(target_os = "android", target_os = "ios")) {
-        3
+        10_000
     } else {
-        6
+        100_000
     }
+}
+
+pub fn default_concurrent_requests() -> usize {
+    6
 }
 
 pub fn default_body_read_attempts() -> u32 {
@@ -271,7 +283,7 @@ impl Settings {
             concurrent_requests: default_concurrent_requests(),
             batch_size: 40,
             max_depth: 50,
-            max_urls_per_domain: 100000,
+            max_urls_per_domain: default_max_urls_per_domain(),
             max_urls_stored: 5000,
 
             // --- Timing & Throttling ---
