@@ -640,11 +640,36 @@ export default function MobilePage() {
         </div>
       )}
 
+      {sizing && (
+        <section className="w-full max-w-md mt-6">
+          <p className="text-[12px] mb-3" style={{ color: MUTED }}>
+            در حال اندازه‌گیری سایت…
+          </p>
+          <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: RAISED }}>
+            <div className="h-full w-1/3 rounded-full"
+              style={{ background: YELLOW, animation: "onwebs-sweep 1.4s ease-in-out infinite" }} />
+          </div>
+          <p className="text-[11px] mt-3 leading-6" style={{ color: MUTED }}>
+            نقشهٔ سایت را می‌خوانم تا ببینم چند صفحه دارد و کراولش روی گوشی
+            شدنی است یا نه.
+          </p>
+        </section>
+      )}
+
       {phase === "crawling" && (
         <section className="w-full max-w-md mt-6">
           <div className="flex items-center justify-between mb-3">
+            {/* Before the first page lands there is real work happening —
+                robots.txt, the sitemap, the first requests — and a counter
+                sitting on zero reads as a stuck app rather than a busy one. */}
             <span className="text-[12px]" style={{ color: MUTED }}>
-              <span style={{ color: YELLOW, fontWeight: 800 }}>{count}</span> صفحه بررسی شد
+              {count === 0 ? (
+                "در حال آماده‌سازی کراول…"
+              ) : (
+                <>
+                  <span style={{ color: YELLOW, fontWeight: 800 }}>{count}</span> صفحه بررسی شد
+                </>
+              )}
             </span>
             {liveIssues.length > 0 && (
               <span className="text-[11px]" style={{ color: MUTED }}>

@@ -70,11 +70,18 @@ pub async fn measure(domain: &str, robots_user_agent: &str) -> Result<SiteSize, 
         .user_agent(robots_user_agent)
         .build()
     {
-        if let Ok(response) = client.get(base.as_str()).send().await {
-            let landed = response.url().clone();
-            if landed.host_str() != base.host_str() {
-                base = landed;
+        match client.get(base.as_str()).send().await {
+            Ok(response) => {
+                let landed = response.url().clone();
+                println!(
+                    "site-size: {} answered {} at {}",
+                    base, response.status(), landed
+                );
+                if landed.host_str() != base.host_str() {
+                    base = landed;
+                }
             }
+            Err(error) => println!("site-size: {} did not answer: {}", base, error),
         }
     }
 
@@ -94,6 +101,10 @@ pub async fn measure(domain: &str, robots_user_agent: &str) -> Result<SiteSize, 
         .await
         .map(|data| data.sitemap_urls)
         .unwrap_or_default();
+    println!(
+        "site-size: robots.txt for {} declared {} sitemap(s): {:?}",
+        base, declared.len(), declared
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
@@ -103,6 +114,10 @@ pub async fn measure(domain: &str, robots_user_agent: &str) -> Result<SiteSize, 
         .map_err(|error| format!("Could not prepare the request: {}", error))?;
 
     let (count, from_sitemap) = count_urls(&client, &base, &declared).await;
+    println!(
+        "site-size: {} → {} urls, from_sitemap={}, verdict={}",
+        base, count, from_sitemap, verdict_for(count, from_sitemap)
+    );
 
     Ok(SiteSize {
         urls: count,
@@ -114,10 +129,28 @@ pub async fn measure(domain: &str, robots_user_agent: &str) -> Result<SiteSize, 
     })
 }
 
+/// A gzip member starts with these two bytes.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+fn decompress_if_gzipped(raw: &[u8]) -> String {
+    if raw.len() >= 2 && raw[..2] == GZIP_MAGIC {
+        use std::io::Read;
+        let mut out = String::new();
+        if flate2::read::MultiGzDecoder::new(raw)
+            .take(32 * 1024 * 1024)
+            .read_to_string(&mut out)
+            .is_ok()
+        {
+            return out;
+        }
+    }
+    String::from_utf8_lossy(raw).into_owned()
+}
+
 /// Sitemaps to open before giving up on an exact figure. A marketplace
 /// publishes hundreds; reading them all to learn "too many" would cost more
 /// than the crawl this check exists to prevent.
-const MAX_SITEMAPS: usize = 12;
+const MAX_SITEMAPS: usize = 15;
 
 /// Counts `<loc>` entries, stopping as soon as the answer cannot change.
 ///
@@ -130,21 +163,25 @@ async fn count_urls(
     base: &Url,
     declared: &[String],
 ) -> (usize, bool) {
-    let mut queue: Vec<String> = if declared.is_empty() {
-        vec![base
+    // Declared order, first to last. Popping from the end sent this into
+    // digikala's blog index — 103 child sitemaps — and it exhausted its budget
+    // there without ever opening the site's main sitemap.
+    let mut queue: std::collections::VecDeque<String> = if declared.is_empty() {
+        std::collections::VecDeque::from(vec![base
             .join("/sitemap.xml")
             .map(|u| u.to_string())
-            .unwrap_or_default()]
+            .unwrap_or_default()])
     } else {
-        declared.to_vec()
+        declared.iter().cloned().collect()
     };
 
     let mut seen = std::collections::HashSet::new();
     let mut total = 0usize;
     let mut opened = 0usize;
+    let mut leaves = 0usize;
     let mut any = false;
 
-    while let Some(next) = queue.pop() {
+    while let Some(next) = queue.pop_front() {
         if opened >= MAX_SITEMAPS || total > REFUSE_ABOVE {
             break;
         }
@@ -153,11 +190,30 @@ async fn count_urls(
         }
         opened += 1;
 
-        let Ok(response) = client.get(&next).send().await else { continue };
-        if !response.status().is_success() {
+        let response = match client.get(&next).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                println!("site-size: sitemap {} unreachable: {}", next, error);
+                continue;
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            println!("site-size: sitemap {} answered {}", next, status);
             continue;
         }
-        let Ok(body) = response.text().await else { continue };
+        let raw = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                println!("site-size: sitemap {} body unreadable: {}", next, error);
+                continue;
+            }
+        };
+        // Large sites serve their sitemaps gzipped as files — digikala's are
+        // `.gz` with no Content-Encoding, so reqwest hands back the compressed
+        // bytes. Reading those as text found no <loc> at all and reported a
+        // shop with millions of pages as having none.
+        let body = decompress_if_gzipped(&raw);
 
         // A sitemap index points at more sitemaps; a sitemap lists pages. Both
         // use <loc>, and the wrapper tag is what tells them apart.
@@ -167,15 +223,37 @@ async fn count_urls(
             any = true;
         }
 
+        println!(
+            "site-size: sitemap {} — {} bytes, index={}, {} <loc>",
+            next, body.len(), is_index, locs
+        );
+
         if is_index {
             for part in body.split("<loc>").skip(1) {
                 if let Some(end) = part.find("</loc>") {
-                    queue.push(part[..end].trim().to_string());
+                    queue.push_back(part[..end].trim().to_string());
                 }
             }
         } else {
             total += locs;
+            leaves += 1;
         }
+    }
+
+    // Stopping early is not the same as finishing. digikala left 95 unread
+    // sitemaps behind and the partial count — 2,146 — was reported as the
+    // site's size, which is how a shop with millions of pages passed as small.
+    // The unread ones are assumed to resemble the ones read.
+    let unread = queue.len();
+    if unread > 0 && leaves > 0 {
+        // A sitemap that could not be counted still holds pages. Treating it
+        // as empty is what let 3,574 unread sitemaps extrapolate to nothing.
+        let per_leaf = (total / leaves).max(1);
+        total = total.saturating_add(unread.saturating_mul(per_leaf.max(1)));
+        println!(
+            "site-size: {} sitemap(s) unread, extrapolating at {} urls each → {}",
+            unread, per_leaf, total
+        );
     }
 
     (total, any)
