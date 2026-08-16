@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 // Near-black rather than black: a true #000 makes the OLED edges of a phone
 // bleed into the bezel and hides every border we draw.
@@ -163,6 +163,10 @@ const PATHS = {
   chevron: "M9 6l6 6-6 6",
   close: "M6 6l12 12M18 6L6 18",
   trash: "M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13",
+  /** Arrow leaving a box — marks the rows that hand the URL to the browser. */
+  external: "M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4",
+  /** A circling arrow: clears the current report to start over. */
+  refresh: "M4 4v6h6M20 20v-6h-6M19.4 9A8 8 0 006 5.3L4 7M4.6 15A8 8 0 0018 18.7l2-1.7",
 };
 
 const CATEGORIES = [
@@ -264,9 +268,32 @@ function Sheet({ open, title, subtitle, onClose, children }) {
 async function openInBrowser(url: string) {
   if (!url) return;
   try {
-    await openExternal(url);
+    await openUrl(url);
   } catch (error) {
     console.error("Could not open", url, error);
+  }
+}
+
+/** The address as a person reads it, not as it travels.
+ *
+ * A crawler stores what the server was asked for, so a Persian URL arrives as
+ * a wall of %D8%A7%D9%81. On a phone one of those fills half the sheet and
+ * says nothing. Decoding is display-only — the tap still opens the raw URL. */
+function readable(url: string) {
+  try {
+    // decodeURI turns the multi-byte Persian escapes back into letters but
+    // leaves the reserved ones alone by design, so a segment like UI%2FUX
+    // stayed half-encoded on screen. What is left after it are single-byte
+    // ASCII escapes, safe to decode one at a time.
+    return decodeURI(url).replace(/%[0-9A-Fa-f]{2}/g, (m) => {
+      try {
+        return decodeURIComponent(m);
+      } catch {
+        return m;
+      }
+    });
+  } catch {
+    return url;
   }
 }
 
@@ -275,11 +302,31 @@ const LinkRow = ({ url }: { url: string }) => (
   <button
     onClick={() => openInBrowser(url)}
     dir="ltr"
-    className="w-full text-left text-[11px] px-3 py-2 break-all active:opacity-60 transition-opacity"
-    style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}
+    className="w-full flex items-start gap-2 text-left text-[11px] px-3 py-2.5 break-all active:opacity-60 transition-opacity"
+    style={{ color: "#9FB6D9", borderBottom: `1px solid ${LINE}` }}
   >
-    {url}
+    <span className="shrink-0 mt-0.5" style={{ opacity: 0.7 }}>
+      <Icon d={PATHS.external} size={12} color="#9FB6D9" />
+    </span>
+    <span className="flex-1 min-w-0">{readable(url)}</span>
   </button>
+);
+
+/** The top of a screen that is not the search screen.
+ *
+ * History and account used to open under the search screen's mark and address
+ * field, which made them look like sections of it rather than places of their
+ * own. This gives each one its own head so the tab bar visibly changes screens. */
+const ScreenHeader = ({ icon, title, subtitle }) => (
+  <header className="w-full pt-9 pb-6 flex items-center gap-3">
+    <span className="rounded-xl p-2.5 shrink-0" style={{ background: SURFACE, border: `1px solid ${LINE}` }}>
+      <Icon d={icon} size={20} />
+    </span>
+    <span className="min-w-0">
+      <h1 className="text-[17px] font-extrabold tracking-tight truncate">{title}</h1>
+      <p className="text-[11px] mt-0.5 truncate" style={{ color: MUTED }}>{subtitle}</p>
+    </span>
+  </header>
 );
 
 /** A tappable row. The whole thing is the target — never just the chevron. */
@@ -570,6 +617,23 @@ export default function MobilePage() {
     setTab("search");
   };
 
+  /** Clears the report on screen so the next address starts from nothing.
+   *
+   * Without it the only way back to an empty screen was to type over the old
+   * address while the previous site's score still sat underneath — which reads
+   * as a verdict on whatever is now in the field. The history keeps the report;
+   * this only clears the view. */
+  const newSearch = () => {
+    setResult(null);
+    setPhase("idle");
+    setUrl("");
+    setCount(0);
+    setLiveIssues([]);
+    setFailure(null);
+    setDemoSample(false);
+    closeSheet();
+  };
+
   const deleteHistoryEntry = (id) => {
     setHistory((prev) => {
       const next = prev.filter((x) => x.id !== id);
@@ -587,19 +651,34 @@ export default function MobilePage() {
 
   const g = result ? grade(result.score) : null;
   const R = 52, C = 2 * Math.PI * R;
+  // Each sheet reads only the data belonging to its own kind. The three below
+  // used to be guarded by `sheet?.data` alone, which is true for whichever
+  // sheet is open — and every sheet's props are built on every render, closed
+  // or not. So opening the history sheet ran the big-site sheet's subtitle
+  // against a history entry, which carries no `size`, and the page died with
+  // "Cannot read properties of undefined (reading 'urls')". React unmounted
+  // the tree, and the WebView showed "This page couldn't load".
   const issue = sheet?.kind === "issue" ? sheet.data : null;
   const category = sheet?.kind === "category" ? sheet.data : null;
+  const bigSite = sheet?.kind === "bigSite" ? sheet.data : null;
+  const tooBig = sheet?.kind === "tooBig" ? sheet.data : null;
+  const entry = sheet?.kind === "historyEntry" ? sheet.data : null;
 
   return (
     <div dir="rtl" className="min-h-screen w-full flex flex-col items-center px-5 pb-28"
       style={{ background: INK, color: TEXT }}>
 
-      {/* Header: mark, then the search field. Nothing here is decorative. */}
       <style>{`@keyframes onwebs-sweep {
         0%   { transform: translateX(-100%) }
         100% { transform: translateX(300%) }
       }`}</style>
 
+      {/* Each tab is a whole screen, not a panel under a shared header. The
+          mark, the address field and the report used to sit outside the tab
+          check, so switching to history left the previous site's score at the
+          top with someone else's list under it. */}
+      {tab === "search" && (
+        <>
       <header className="w-full max-w-md pt-8 pb-5 flex flex-col items-center">
         {/* The navy mark recoloured to the one accent this screen uses. Its
             own shading is preserved so the form does not flatten into a blob. */}
@@ -631,6 +710,19 @@ export default function MobilePage() {
           {sizing ? "…" : phase === "crawling" ? "…" : "بررسی"}
         </button>
       </div>
+
+      {/* Only once there is something to clear. Offering it on an empty screen
+          would be a button that does nothing. */}
+      {phase === "done" && result && (
+        <button
+          onClick={newSearch}
+          className="w-full max-w-md mt-3 flex items-center justify-center gap-2 rounded-full py-2.5 text-[12px] font-bold active:scale-[0.98] transition-transform"
+          style={{ background: SURFACE, border: `1px solid ${LINE}`, color: MUTED }}
+        >
+          <Icon d={PATHS.refresh} size={14} color={MUTED} />
+          بررسی یک سایت دیگر
+        </button>
+      )}
 
       {failure && (
         <div className="w-full max-w-md mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5"
@@ -787,8 +879,9 @@ export default function MobilePage() {
         </section>
       )}
 
-      {/* The six areas. Always available — this is what the app checks. */}
-      {tab === "search" && phase !== "crawling" && (
+      {/* The six areas. What the app checks, so it belongs on the screen that
+          does the checking. */}
+      {phase !== "crawling" && (
         <section className="w-full max-w-md mt-8">
           <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>
             چه چیزهایی بررسی می‌شود
@@ -799,10 +892,16 @@ export default function MobilePage() {
           ))}
         </section>
       )}
+        </>
+      )}
 
       {tab === "history" && (
-        <section className="w-full max-w-md mt-6">
-          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>تاریخچه</h2>
+        <section className="w-full max-w-md">
+          <ScreenHeader
+            icon={PATHS.history}
+            title="تاریخچه"
+            subtitle={history.length ? `${history.length} گزارش روی این دستگاه` : "چیزی ذخیره نشده"}
+          />
           {history.length === 0 && (
             <p className="text-[12px] py-10 text-center" style={{ color: MUTED }}>
               هنوز سایتی بررسی نکرده‌ای.
@@ -822,8 +921,12 @@ export default function MobilePage() {
       )}
 
       {tab === "profile" && (
-        <section className="w-full max-w-md mt-6">
-          <h2 className="text-[12px] font-extrabold mb-1" style={{ color: MUTED }}>حساب</h2>
+        <section className="w-full max-w-md">
+          <ScreenHeader
+            icon={PATHS.profile}
+            title="حساب"
+            subtitle={profile?.name || "روی همین دستگاه ذخیره می‌شود"}
+          />
           <Row icon={PATHS.profile} title={profile?.name || "تنظیم پروفایل"}
             meta={profile?.email || "نام و ایمیل روی همین دستگاه ذخیره می‌شود"}
             onClick={() => {
@@ -893,51 +996,55 @@ export default function MobilePage() {
       </Sheet>
 
       <Sheet open={sheet?.kind === "historyEntry"} onClose={closeSheet}
-        title={sheet?.data?.domain || ""}
-        subtitle={sheet?.data ? `${sheet.data.pages} صفحه · امتیاز ${sheet.data.score}` : ""}>
-        <button
-          onClick={() => openInBrowser(
-            /^https?:\/\//i.test(sheet.data.domain) ? sheet.data.domain : `https://${sheet.data.domain}`,
-          )}
-          className="w-full rounded-xl py-3 text-[13px] font-bold mb-2"
-          style={{ background: RAISED, color: YELLOW }}
-        >
-          باز کردن سایت در مرورگر
-        </button>
-        <button onClick={() => openHistoryEntry(sheet.data)}
-          className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
-          style={{ background: YELLOW, color: "#0A0A0B" }}>
-          باز کردن این گزارش
-        </button>
-        <button
-          onClick={() => { deleteHistoryEntry(sheet.data.id); closeSheet(); }}
-          className="w-full rounded-xl py-3 text-[13px] font-bold flex items-center justify-center gap-2"
-          style={{ background: RAISED, color: "#F87171" }}>
-          <Icon d={PATHS.trash} size={16} color="#F87171" /> حذف
-        </button>
+        title={entry?.domain || ""}
+        subtitle={entry ? `${entry.pages} صفحه · امتیاز ${entry.score}` : ""}>
+        {entry && (
+          <>
+            <button
+              onClick={() => openInBrowser(
+                /^https?:\/\//i.test(entry.domain) ? entry.domain : `https://${entry.domain}`,
+              )}
+              className="w-full rounded-xl py-3 text-[13px] font-bold mb-2"
+              style={{ background: RAISED, color: YELLOW }}
+            >
+              باز کردن سایت در مرورگر
+            </button>
+            <button onClick={() => openHistoryEntry(entry)}
+              className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
+              style={{ background: YELLOW, color: "#0A0A0B" }}>
+              باز کردن این گزارش
+            </button>
+            <button
+              onClick={() => { deleteHistoryEntry(entry.id); closeSheet(); }}
+              className="w-full rounded-xl py-3 text-[13px] font-bold flex items-center justify-center gap-2"
+              style={{ background: RAISED, color: "#F87171" }}>
+              <Icon d={PATHS.trash} size={16} color="#F87171" /> حذف
+            </button>
+          </>
+        )}
       </Sheet>
 
       {/* Between the warn and refuse thresholds: the crawl is offered, but
           only alongside what it will cost and a smaller way to get an answer. */}
       <Sheet open={sheet?.kind === "bigSite"} onClose={closeSheet}
         title="این سایت بزرگ است"
-        subtitle={sheet?.data ? `حدود ${sheet.data.size.urls.toLocaleString("fa-IR")} آدرس در نقشهٔ سایت` : ""}>
-        {sheet?.data && (
+        subtitle={bigSite ? `حدود ${bigSite.size.urls.toLocaleString("fa-IR")} آدرس در نقشهٔ سایت` : ""}>
+        {bigSite && (
           <>
             <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>
               کراول کامل این تعداد روی گوشی ممکن است ساعت‌ها طول بکشد، باتری و
               حافظه را پر کند و نیمه‌کاره بماند. می‌توانی به‌جایش نمونه‌ای از
-              {" "}{sheet.data.size.sampleSize.toLocaleString("fa-IR")} آدرس را
+              {" "}{bigSite.size.sampleSize.toLocaleString("fa-IR")} آدرس را
               بررسی کنی — برای قضاوت دربارهٔ وضعیت سایت معمولاً کافی است.
             </p>
             <button
-              onClick={() => { closeSheet(); runCrawl(sheet.data.domain, sheet.data.size.sampleSize); }}
+              onClick={() => { closeSheet(); runCrawl(bigSite.domain, bigSite.size.sampleSize); }}
               className="w-full rounded-xl py-3 text-[13px] font-extrabold mb-2 active:scale-[0.98] transition-transform"
               style={{ background: YELLOW, color: INK }}>
-              بررسی نمونه ({sheet.data.size.sampleSize.toLocaleString("fa-IR")} آدرس)
+              بررسی نمونه ({bigSite.size.sampleSize.toLocaleString("fa-IR")} آدرس)
             </button>
             <button
-              onClick={() => { closeSheet(); runCrawl(sheet.data.domain); }}
+              onClick={() => { closeSheet(); runCrawl(bigSite.domain); }}
               className="w-full rounded-xl py-3 text-[13px] font-bold mb-2"
               style={{ background: RAISED, color: TEXT }}>
               با این حال کامل کراول کن
@@ -955,11 +1062,11 @@ export default function MobilePage() {
           on a phone, so it is declined rather than offered and abandoned. */}
       <Sheet open={sheet?.kind === "tooBig"} onClose={closeSheet}
         title="این سایت برای گوشی خیلی بزرگ است"
-        subtitle={sheet?.data ? `حدود ${sheet.data.size.urls.toLocaleString("fa-IR")} آدرس` : ""}>
-        {sheet?.data && (
+        subtitle={tooBig ? `حدود ${tooBig.size.urls.toLocaleString("fa-IR")} آدرس` : ""}>
+        {tooBig && (
           <>
             <p className="text-[12px] leading-6 mb-4" style={{ color: "#C9C9CF" }}>
-              سقف این اپ {sheet.data.size.refuseAbove.toLocaleString("fa-IR")} آدرس
+              سقف این اپ {tooBig.size.refuseAbove.toLocaleString("fa-IR")} آدرس
               است. سایت‌هایی در این ابعاد — فروشگاه‌های بزرگ و مارکت‌پلیس‌ها —
               روی گوشی تمام نمی‌شوند و فقط باتری و حافظه را می‌سوزانند.
             </p>

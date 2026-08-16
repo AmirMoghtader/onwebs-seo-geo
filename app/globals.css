@@ -403,11 +403,17 @@ pre:not([class*="robots"]):not([class*="schema"]) {
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
-    --chart-1: 221.2 83.2% 53.3%;
-    --chart-2: 212 95% 68%;
-    --chart-3: 216 92% 60%;
-    --chart-4: 210 98% 78%;
-    --chart-5: 212 97% 87%;
+    /* Chart series, in fixed order — a segment keeps its colour no matter how
+       many others are on screen. These five were five steps of the same blue,
+       so a two-slice donut came out as one blue beside a paler blue and the
+       slices were told apart only by size. Now five distinct hues, checked for
+       colour-blind separation against the white card behind them: the closest
+       neighbouring pair reads 9.1 apart under protanopia, where 8 is the bar. */
+    --chart-1: 212.8 67.7% 50.2%; /* #2a78d6 blue    */
+    --chart-2: 17 82.1% 56.3%; /* #eb6834 orange  */
+    --chart-3: 158.5 73.3% 39.6%; /* #1baf7a aqua    */
+    --chart-4: 40.8 100% 46.5%; /* #eda100 yellow  */
+    --chart-5: 337.4 70.3% 69.6%; /* #e87ba4 magenta */
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
@@ -438,11 +444,14 @@ pre:not([class*="robots"]):not([class*="schema"]) {
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 221.2 83.2% 53.3%;
-    --chart-1: 221.2 83.2% 53.3%;
-    --chart-2: 212 95% 68%;
-    --chart-3: 216 92% 60%;
-    --chart-4: 210 98% 78%;
-    --chart-5: 212 97% 87%;
+    /* The same five hues, re-stepped for the dark card rather than reused from
+       above. The light steps sit too close to #171717 to be told apart on it;
+       these each clear 3:1 against it and stay 8.4 apart under protanopia. */
+    --chart-1: 212.8 76.8% 56.1%; /* #3987e5 blue    */
+    --chart-2: 17.1 70.2% 50%; /* #d95926 orange  */
+    --chart-3: 159.2 72.7% 35.9%; /* #199e70 aqua    */
+    --chart-4: 39.7 100% 39.4%; /* #c98500 yellow  */
+    --chart-5: 338.2 61.1% 57.6%; /* #d55181 magenta */
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;

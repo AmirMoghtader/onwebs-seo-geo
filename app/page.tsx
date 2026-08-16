@@ -120,6 +120,8 @@ const Home: React.FC<HomeProps> = () => {
   let [pageSpeed, setPageSpeed] = useState<any[]>([]);
   const [favicon_url, setFavicon_url] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  // Why the PageSpeed row is empty, when it is empty. Null means "no problem".
+  const [speedError, setSpeedError] = useState<string | null>(null);
   const [keywords, setKeywords] = useState<string[]>([]);
   const [readingLevelResults, setReadingLevelResults] = useState<any[]>([]);
   const [tagManager, setTagManager] = useState<any[]>([]);
@@ -196,8 +198,11 @@ const Home: React.FC<HomeProps> = () => {
   const handleClick = (url: string) => {
     // Clear previous results before starting the new crawl
 
-    // page speed loading
-    setLoading(!loading);
+    // page speed loading. Starting a crawl always means "now loading" — this
+    // flipped the flag instead, so a crawl begun while the previous one was
+    // still marked loading turned the spinners off rather than on.
+    setLoading(true);
+    setSpeedError(null);
     // set SEO LOADING
     seoIsLoading.setSeoLoading(!seoIsLoading.seoLoading);
 
@@ -419,14 +424,23 @@ const Home: React.FC<HomeProps> = () => {
 
   const handleSpeed = useCallback(
     (url: string) => {
+      setSpeedError(null);
       invoke<{}>("fetch_page_speed", { url: url, strategy: strategy.strategy })
         .then((result: any) => {
           setPageSpeed(result);
         })
-        .then(() => setLoading(false))
-        .catch(console.error);
+        .catch((error) => {
+          // Every widget in the row above reads `loading`, and this used to
+          // clear it in a `.then` chained after the one that succeeded — so a
+          // failed request skipped it and fourteen spinners span for as long
+          // as the app stayed open. `.finally` is the whole fix; the message
+          // is so the reason is on screen instead of only in the console.
+          console.error(error);
+          setSpeedError(String(error));
+        })
+        .finally(() => setLoading(false));
     },
-    [strategy.strategy, setPageSpeed, setLoading],
+    [strategy.strategy, setPageSpeed, setLoading, setSpeedError],
   );
 
   const showLinksSequentially = useCallback((links: string[]) => {
@@ -690,6 +704,31 @@ const Home: React.FC<HomeProps> = () => {
                 <h2 className="bottom-0 text-black/20 dark:text-white/20 font-semibold pb-1 ml-1 text-sm">
                   ویجت‌ها
                 </h2>
+
+                {speedError && !loading && (
+                  <div
+                    dir="rtl"
+                    className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                  >
+                    {speedError.includes("API key") ||
+                    speedError.includes("403") ? (
+                      <>
+                        این ویجت‌ها از PageSpeed Insights گوگل می‌آیند و کلید API
+                        ندارند. از منوی{" "}
+                        <span className="font-semibold">
+                          اتصال‌ها ← PageSpeed Insights
+                        </span>{" "}
+                        یک کلید رایگان اضافه کنید. بقیهٔ گزارش بدون آن هم کار
+                        می‌کند.
+                      </>
+                    ) : (
+                      <>
+                        PageSpeed Insights پاسخ نداد:{" "}
+                        <span className="font-mono">{speedError}</span>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <section
                   className={`grid grid-cols-7 gap-x-2 gap-y-2 justify-items-stretch w-full relative`}

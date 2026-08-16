@@ -711,11 +711,27 @@ pub async fn get_page_speed_insights(
     )
     .map_err(|e| format!("Failed to make one or both requests: {}", e))?;
 
+    // Google answers a keyless request with an HTML error page, not JSON. That
+    // went straight into serde, which failed with "expected value at line 1
+    // column 1" — true, useless, and the only clue anyone got about a missing
+    // API key. The status is read here so the reason reaches the window.
+    let general_status = general_response.status();
+
     // Handle general response
     let general_response_text = general_response
         .text()
         .await
         .map_err(|e| format!("Failed to read general response text: {}", e))?;
+
+    if !general_status.is_success() {
+        return Err(if api_key.is_empty() {
+            "No PageSpeed API key (403). Add one from the Connections menu > \
+             PageSpeed Insights."
+                .to_string()
+        } else {
+            format!("PageSpeed Insights refused the request: HTTP {}", general_status)
+        });
+    }
 
     // Handle SEO response
     let seo_response_text = seo_response

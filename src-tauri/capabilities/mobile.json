@@ -113,6 +113,7 @@
     "core:window:allow-start-dragging",
     "core:webview:allow-print",
     "shell:allow-open",
+    "opener:default",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",

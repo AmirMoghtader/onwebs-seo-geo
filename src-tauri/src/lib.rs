@@ -289,6 +289,12 @@ async fn run_async() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        // Opening a link had used the shell plugin, which on Android looks for
+        // a program to run and finds none — "Scoped shell IO error: No such
+        // file or directory". Every tapped URL failed there silently. This
+        // plugin hands the URL to the OS instead, which is an Intent on
+        // Android and the usual opener elsewhere.
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process_init_shim())
         .plugin(tauri_plugin_clipboard_manager::init())

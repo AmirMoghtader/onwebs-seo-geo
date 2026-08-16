@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.2"
+version = "0.1.3"
 description = "Onwebs SEO & GEO — desktop SEO crawler and GEO/AI-search toolkit"
 authors = ["Onwebs"]
 license = ""
@@ -90,6 +90,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 strsim = "0.11.1"
 dashmap = "6.1.0"
+tauri-plugin-opener = "2"
 
 
 [features]
