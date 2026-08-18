@@ -8,11 +8,19 @@
 
 [seo.onwebs.ir](https://seo.onwebs.ir) · [دانلود](../../releases)
 
-![Version](https://img.shields.io/badge/version-0.1.0-1E3A6F)
+![Version](https://img.shields.io/badge/version-0.1.2-1E3A6F)
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20·%20Windows%20·%20Linux-2B6CC4)
 
 </div>
+
+<p align="center">
+  <img src="assets/screens/deep-crawler.webp" width="100%" alt="کراول عمیق — جدول کامل ۷۳ ستونی، فارسی">
+</p>
+<p align="center">
+  <img src="assets/screens/dashboard.webp" width="49.2%" alt="داشبورد تحلیل سئوی تک‌صفحه">
+  <img src="assets/screens/log-analyzer.webp" width="49.2%" alt="تحلیلگر لاگ سرور — ربات در برابر انسان">
+</p>
 
 ---
 

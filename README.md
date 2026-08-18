@@ -8,12 +8,20 @@
 
 [دانلود و مستندات فارسی ← README.fa.md](README.fa.md) · [seo.onwebs.ir](https://seo.onwebs.ir) · [Downloads](../../releases)
 
-![Version](https://img.shields.io/badge/version-0.1.0-1E3A6F)
+![Version](https://img.shields.io/badge/version-0.1.2-1E3A6F)
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20·%20Windows%20·%20Linux-2B6CC4)
 ![Privacy](https://img.shields.io/badge/telemetry-none-brightgreen)
 
 </div>
+
+<p align="center">
+  <img src="assets/screens/deep-crawler.webp" width="100%" alt="Deep crawler — the full 73-column table, in Persian">
+</p>
+<p align="center">
+  <img src="assets/screens/dashboard.webp" width="49.2%" alt="Single-page SEO dashboard">
+  <img src="assets/screens/log-analyzer.webp" width="49.2%" alt="Server-log analyzer — bots vs humans">
+</p>
 
 ---
 
